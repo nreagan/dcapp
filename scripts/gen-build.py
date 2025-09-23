@@ -101,7 +101,7 @@ with pl.project("dcapp"):
                     compiler_flags=["-std=c++17", "-fmodules", "-fPIC"])
     pl.add_profile(compiler_filter=["clang"],
                     configuration_filter=["debug"],
-                    compiler_flags=["--debug", "-g"])
+                    compiler_flags=["--debug", "-g", "-O0", "-fno-omit-frame-pointer"])
 
     # configs
     pl.add_profile(configuration_filter=["debug"], definitions=["_DEBUG", "PL_CONFIG_DEBUG"])
