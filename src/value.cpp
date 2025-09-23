@@ -19,6 +19,13 @@ DcValueType dc_value_type_from_string(const std::string &type) {
     return DC_APP_VALUE_TYPE_UNDEFINED;
 }
 
+// Q: why do we have this function?
+// A: in case we want to move to C eventually..or more simply,
+//    to remove the std::string dependency
+void dc_value_copy_value(DcValue *dst, DcValue *src) {
+    *dst = *src;
+}
+
 DcValue dc_value_create_typed_value_from_string(DcValueType type, const std::string &value) {
     DcValue new_value = (DcValue){
         .type       = type,
@@ -107,6 +114,25 @@ void dc_value_refresh_value(DcValue *value) {
             value->value_boolean = dc_utils_string_to_boolean(value->value_string);
             value->value_float   = dc_utils_string_to_float(value->value_string);
             value->value_integer = dc_utils_string_to_integer(value->value_string);
+            break;
+        default:
+            throw std::runtime_error("Invalid value tyep");
+    }
+}
+
+bool dc_value_is_equal(DcValue *value1, DcValue *value2) {
+    switch (value1->type) {
+        case DC_APP_VALUE_TYPE_BOOLEAN:
+            return value1->value_boolean == value2->value_boolean;
+            break;
+        case DC_APP_VALUE_TYPE_INTEGER:
+            return value1->value_integer == value2->value_integer;
+            break;
+        case DC_APP_VALUE_TYPE_FLOAT:
+            return value1->value_float == value2->value_float;
+            break;
+        case DC_APP_VALUE_TYPE_STRING:
+            return value1->value_string == value2->value_string;
             break;
         default:
             throw std::runtime_error("Invalid value tyep");

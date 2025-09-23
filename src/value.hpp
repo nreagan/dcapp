@@ -58,9 +58,11 @@ typedef struct _DcValue4 {
 } DcValue4;
 
 DcValueType dc_value_type_from_string(const std::string &type);
+void        dc_value_copy_value(DcValue *dst, DcValue *src);
 DcValue     dc_value_create_typed_value_from_string(DcValueType type, const std::string &value);
 DcValue     dc_value_create_value_string(const std::string &value);
 DcValue     dc_value_create_value_integer(int value);
 DcValue     dc_value_create_value_float(float value);
 DcValue     dc_value_create_value_boolean(bool value);
 void        dc_value_refresh_value(DcValue *value);
+bool        dc_value_is_equal(DcValue *value1, DcValue *value2);

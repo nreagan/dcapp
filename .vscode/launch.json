@@ -19,7 +19,11 @@
         "program": "${workspaceFolder}/pilotlight/out/pilot_light",
         "args": ["-a", "dcapp", "${workspaceFolder}/samples/test/test.xml"],
         "cwd": "${workspaceFolder}/pilotlight/out",
-        "preLaunchTask": "build dcapp-debug (macos)"
+        "preLaunchTask": "build dcapp-debug (macos)",
+        "env": {
+          "ASAN_OPTIONS": "halt_on_error=1",
+          "DYLD_INSERT_LIBRARIES": "/opt/homebrew/opt/llvm/lib/clang/21/lib/darwin/libclang_rt.asan_osx_dynamic.dylib"
+        }
       },
       {
         "name": "dcapp (windows)",

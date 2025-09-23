@@ -2,7 +2,8 @@
 
 // dcapp includes
 #define PL_EXPERIMENTAL
-#include <value.hpp>
+#include "value.hpp"
+#include "trick.hpp"
 
 // library includes
 #include <libxml2/libxml/parser.h>
@@ -37,18 +38,19 @@ typedef enum {
     DC_APP_ELEM_TYPE_NONELEM,
     DC_APP_ELEM_TYPE_PANEL,
     DC_APP_ELEM_TYPE_POLYGON,
+    DC_APP_ELEM_TYPE_TRICK_FROM,
+    DC_APP_ELEM_TYPE_TRICK_IO,
+    DC_APP_ELEM_TYPE_TRICK_TO,
+    DC_APP_ELEM_TYPE_TRICK_VARIABLE,
     DC_APP_ELEM_TYPE_TRUE,
     DC_APP_ELEM_TYPE_VARIABLE,
     DC_APP_ELEM_TYPE_VERTEX,
     DC_APP_ELEM_TYPE_WINDOW,
 } DcAppElemType;
-std::string   dc_app_elem_type_to_string(DcAppElemType type);
-DcAppElemType dc_app_string_to_elem_type(std::string name);
-DcAppElemType dc_app_xml_node_to_elem_type(xmlNodePtr node);
 
 // value utils
-typedef uint32_t      DcAppValueIndex;
-const DcAppValueIndex dc_value_index_undefined = 0;
+typedef int           DcAppValueIndex;
+const DcAppValueIndex DC_VALUE_INDEX_UNDEFINED = -1;
 
 typedef struct _DcAppValueIndex2 {
     union {
@@ -86,6 +88,13 @@ typedef struct _DcAppValueIndex4 {
     };
 } DcAppValueIndex4;
 
+// variable utils
+typedef int DcAppVariableIndex;
+typedef struct _DcAppVariable {
+    void           *extern_data;
+    DcAppValueIndex value_index;
+} DcAppVariable;
+
 // alignment utils
 enum DcAppAlignType {
     DC_APP_ALIGN_TYPE_UNDEFINED,
@@ -122,8 +131,8 @@ enum DcAppNodeType {
     DC_APP_NODE_TYPE_WINDOW,
 };
 
-typedef uint32_t     DcAppNodeIndex;
-const DcAppNodeIndex DC_APP_NODE_INDEX_UNDEFINED = 0;
+typedef int          DcAppNodeIndex;
+const DcAppNodeIndex DC_APP_NODE_INDEX_UNDEFINED = -1;
 
 typedef struct _DcAppNodeConditional {
     DcAppValueIndex type;
@@ -172,6 +181,18 @@ typedef struct _DcAppNodePolygon {
     bool              line_enabled;
 } DcAppNodePolygon;
 
+typedef struct _DcAppNodeText {
+    DcAppValueIndex  text;
+    DcAppValueIndex  size;
+    DcAppValueIndex4 color;
+    DcAppValueIndex2 position;
+    DcAppValueIndex2 origin;
+    DcAppValueIndex2 alignment;
+    DcAppValueIndex  draw_outline;
+    DcAppValueIndex  outline_size;
+    DcAppValueIndex  rotate;
+} DcAppNodeText;
+
 typedef struct _DcAppNodeWindow {
     DcAppValueIndex2 position;
     DcAppValueIndex2 dimensions;
@@ -203,11 +224,21 @@ typedef struct _DcAppLogic {
     void (*close)();
 } DcAppLogic;
 
-// variables
-typedef struct _DcAppVariable {
-    void           *extern_data;
-    DcAppValueIndex value_index;
-} DcAppVariable;
+// trick
+typedef struct _DcAppTrickTxVariable {
+    DcAppVariableIndex variable_index;
+    DcValue            prev_value;
+} DcAppTrickTxVariable;
+
+typedef struct _DcAppTrick {
+    DcTrickIndex index;
+
+} DcAppTrick;
+
+// elem utils
+std::string   dc_app_elem_type_to_string(DcAppElemType type);
+DcAppElemType dc_app_string_to_elem_type(std::string name);
+DcAppElemType dc_app_xml_node_to_elem_type(xmlNodePtr node);
 
 // constant utils
 void        dc_app_set_constant(const std::string &name, const std::string &text);
@@ -222,7 +253,7 @@ DcAppValueIndex dc_app_create_and_register_typed_value_from_string(DcValueType t
 DcAppValueIndex dc_app_create_and_register_typed_value_from_string(DcValueType type, std::string text);
 
 // variable utils
-void dc_app_set_variable(const std::string &name, DcAppValueIndex value_index);
+void dc_app_register_variable(const std::string &name, DcAppValueIndex value_index);
 
 // node utils
 std::string    dc_app_node_type_to_string(DcAppNodeType type);
@@ -242,15 +273,19 @@ typedef struct _DcAppData {
     std::string log_dir_path;
 
     // values
-    std::map<std::string, std::string>   constants;
-    std::map<std::string, DcAppVariable> variables;
-    std::vector<DcValue>                 values;
+    std::map<std::string, std::string>        constants;
+    std::map<std::string, DcAppVariableIndex> variable_indices;
+    std::vector<DcAppVariable>                variables;
+    std::vector<DcValue>                      values;
 
     // nodes
     std::vector<DcAppNode> nodes;
 
     // window (root node)
     DcAppNodeIndex window;
+
+    // trick
+    // DcApp
 
     // logic
     DcAppLogic logic;
