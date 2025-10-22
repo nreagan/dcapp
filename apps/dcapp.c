@@ -976,6 +976,9 @@ static _NodeIndex _process_node(xmlNodePtr xml_node, _NodeIndex parent_node_inde
                 } else {
                     dc_node.container.pivot_local_align.y = DC_APP_VAL_INDEX_UNDEFINED;
                 }
+
+                dc_node.container.pivot_position.x = DC_APP_VAL_INDEX_UNDEFINED;
+                dc_node.container.pivot_position.y = DC_APP_VAL_INDEX_UNDEFINED;
             } else {
                 fprintf(stderr, "DCAPP _process_node(): Container: invalid PivotParameters; must use both PivotPosition params, or none. Using one is not allowed.\n");
             }
@@ -2394,7 +2397,7 @@ static void _draw_node(_PlAppData *pl_app_data, _NodeIndex node_index, plVec2 *p
 
                     // compute matrices
                     plMat4 trans_to_origin_xform   = pl_mat4_translate_xyz(-1 * pivot_position[0], -1 * pivot_position[1], 0.0f);
-                    plMat4 rotate_xform            = pl_mat4_rotate_vec3(pl_radiansf(rotation), (plVec3){0.0f, 0.0f, 1.0f});
+                    plMat4 rotate_xform            = pl_mat4_rotate_vec3(rotation, (plVec3){0.0f, 0.0f, 1.0f});
                     plMat4 trans_from_origin_xform = pl_mat4_translate_xyz(pivot_position[0], pivot_position[1], 0.0f);
 
                     // apply transform
@@ -2553,7 +2556,7 @@ static void _draw_node(_PlAppData *pl_app_data, _NodeIndex node_index, plVec2 *p
 
                     // compute matrices
                     plMat4 trans_to_origin_xform   = pl_mat4_translate_xyz(-1 * pivot_position[0], -1 * pivot_position[1], 0.0f);
-                    plMat4 rotate_xform            = pl_mat4_rotate_vec3(pl_radiansf(rotation), (plVec3){0.0f, 0.0f, 1.0f});
+                    plMat4 rotate_xform            = pl_mat4_rotate_vec3(rotation, (plVec3){0.0f, 0.0f, 1.0f});
                     plMat4 trans_from_origin_xform = pl_mat4_translate_xyz(pivot_position[0], pivot_position[1], 0.0f);
 
                     // apply transform
