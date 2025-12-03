@@ -19,7 +19,14 @@ if __name__ == "__main__":
 
     # platform specific execution
     if plat.system() == "Windows":
-        pass # TODO implement
+
+        genHeader += ".exe"
+
+        for testDir in testDirs:
+            if os.path.exists(testDir):
+                os.chdir(testDir)
+                subprocess.run([genHeader, "test.xml"], check=True)
+                subprocess.run('cl -Zi -O2 -LD logic\\logic.cpp -Fe"logic\\logic.dll" -link -noimplib -noexp', shell=True, check=True)
     elif plat.system() == "Darwin":
         for testDir in testDirs:
             if os.path.exists(testDir):
