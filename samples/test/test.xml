@@ -59,7 +59,7 @@
       </Button>
 
       <!-- Button with enable/disable control -->
-      <Button Type="#_button_toggle_" X="300" Y="100" Width="120" Height="60" Variable="controlled_var" On="1" Off="0" ActiveVariable="toggle_var" ActiveOn="1">
+      <Button Type="#_button_toggle_" X="300" Y="100" Width="120" Height="60" Variable="controlled_var" On="1" Off="0" EnabledVariable="toggle_var" EnabledOn="1">
         <ButtonIndicatorOn>
           <Rectangle Width="120" Height="60" FillColor="0 0.8 0" />
           <Text Style="text">ON</Text>
@@ -79,7 +79,7 @@
       </Button>
 
       <!-- Button with separate switch/indicator (simulated lag) -->
-      <Button Type="#_button_toggle_" X="300" Y="200" Width="120" Height="60" SwitchVariable="cmd_var" SwitchOn="1" SwitchOff="0" IndicatorVariable="status_var" IndicatorOn="1">
+      <Button Type="#_button_toggle_" X="300" Y="200" Width="120" Height="60" TargetVariable="cmd_var" TargetOn="1" TargetOff="0" IndicatorVariable="status_var" IndicatorOn="1">
         <ButtonIndicatorOn>
           <Rectangle Width="120" Height="60" FillColor="0 0.8 0" />
           <Text Style="text">CONFIRMED</Text>

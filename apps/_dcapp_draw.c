@@ -334,7 +334,7 @@ static void _draw_node_button(_AppData *app_data, _NodeIndex node_index, _Node *
 
     // determine transition
     DcValue *target_var_value = dc_app_lookup_get_value(app_data->lookup, dc_app_lookup_get_var(app_data->lookup, node->button.var_target)->value_index);
-    bool     is_transitioning = dc_value_is_equal(target_var_value, indicator_var_value);
+    bool     is_transitioning = dc_value_is_not_equal(target_var_value, indicator_var_value);
 
     // process mouse event states
     bool is_pressed  = (app_data->frame_data.pressed_node == node_index);
@@ -414,14 +414,7 @@ static void _draw_node_button(_AppData *app_data, _NodeIndex node_index, _Node *
     plVec2 child_position   = (plVec2){0.0f, 0.0f};
     plVec2 child_dimensions = (plVec2){virtual_dimension[0], virtual_dimension[1]};
 
-    // layer 1: enabled/disabled state (always draw)
-    if (is_enabled) {
-        _draw_node_list(app_data, node->button.child_enabled, &child_position, &child_dimensions, &transform);
-    } else {
-        _draw_node_list(app_data, node->button.child_disabled, &child_position, &child_dimensions, &transform);
-    }
-
-    // layer 2: on/off/transition state
+    // layer 1: indicator state (base appearance)
     if (is_transitioning) {
         _draw_node_list(app_data, node->button.child_transition, &child_position, &child_dimensions, &transform);
     } else if (is_indicator_on) {
@@ -430,7 +423,14 @@ static void _draw_node_button(_AppData *app_data, _NodeIndex node_index, _Node *
         _draw_node_list(app_data, node->button.child_indicator_off, &child_position, &child_dimensions, &transform);
     }
 
-    // layer 3: mouse press/release state
+    // layer 2: enabled/disabled overlay
+    if (is_enabled) {
+        _draw_node_list(app_data, node->button.child_enabled, &child_position, &child_dimensions, &transform);
+    } else {
+        _draw_node_list(app_data, node->button.child_disabled, &child_position, &child_dimensions, &transform);
+    }
+
+    // layer 3: press/release feedback
     if (is_pressed) {
         _draw_node_list(app_data, node->button.child_pressed, &child_position, &child_dimensions, &transform);
     } else if (is_released) {
