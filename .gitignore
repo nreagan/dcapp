@@ -13,6 +13,7 @@ samples/**/dcapp.h
 **.pdb
 **.dylib
 **.dSYM/
+**.dylib
 **.dll
 
 # windows
