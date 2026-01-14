@@ -11,6 +11,7 @@ samples/local/
 samples/**/dcapp.h
 **.so
 **.pdb
+**.dylib
 **.dSYM/
 **.dll
 

@@ -6,6 +6,7 @@
 #include "../value.h"
 #include "../utils/env.h"
 #include "../utils/file.h"
+#include "../utils/math.h"
 #include "../utils/stb_sb.h"
 #include "../utils/string.h"
 
