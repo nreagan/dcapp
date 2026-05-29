@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<DCAPP>
+    <!--
+        Projective Image Verification Sample
+
+        Bakes a calibrated 4-quadrant test pattern onto the lunar surface and
+        renders it from the projective camera's own pose, so the bake should
+        appear centered in the view.
+
+        Expected (no orientation bugs):
+            - Red    in upper-left of the bake
+            - Green  in upper-right
+            - Blue   in lower-left
+            - Yellow in lower-right
+            - Center crosshair lands on the magenta marker (the bake's
+              ray-cast hit point on the surface)
+            - All labels (TL / TR / BL / BR / CENTER) readable, not mirrored
+
+        The bake's camera pose (X,Y,Z,Pitch) is duplicated into the view's
+        XYZ/RPY camera variables so both share the same eye and forward
+        direction.
+    -->
+
+    <!-- Projective camera pose; reused for the view camera so both look
+         at the same surface point. -->
+    <Variable Type="#_variable_double_" InitialValue="0">CamX</Variable>
+    <Variable Type="#_variable_double_" InitialValue="-2103306">CamY</Variable>
+    <Variable Type="#_variable_double_" InitialValue="-765476">CamZ</Variable>
+    <Variable Type="#_variable_double_" InitialValue="70">CamPitch</Variable>
+    <Variable Type="#_variable_double_" InitialValue="0">CamYaw</Variable>
+    <Variable Type="#_variable_double_" InitialValue="0">CamRoll</Variable>
+
+    <Variable Type="#_variable_double_" InitialValue="-1">LightY</Variable>
+    <Variable Type="#_variable_double_" InitialValue="0.3">Tau</Variable>
+
+    <Planet Name="Moon" MeshCacheSize="128"
+            LightDirectionX="-1" LightDirectionY="@LightY" LightDirectionZ="-1">
+
+        <PlanetData File="../../cache/LDEM_45S_100M.planet.json"/>
+
+        <!-- The bake under test. Pose matches the Cam* variables above so
+             the view camera shares the projective's eye, forward, and
+             vertical axis. -->
+        <PlanetProjectiveImage File="projective_test.png"
+            X="0" Y="-2103306" Z="-765476"
+            Roll="0" Pitch="70" Yaw="0"
+            VerticalFov="60" AspectRatio="1.0"/>
+    </Planet>
+
+    <Default>
+        <Text Size="14" FillColor="#_color_white_"/>
+    </Default>
+
+    <Window X="0" Y="20" Width="900" Height="800">
+        <Panel VirtualWidth="900" VirtualHeight="800" BackgroundColor="#_color_charcoal_">
+
+            <Text X="450" Y="20" LocalAlignX="#_align_center_"
+                  Size="18" FillColor="#_color_yellow_">Projective Image Verification</Text>
+            <Text X="450" Y="45" LocalAlignX="#_align_center_"
+                  Size="11" FillColor="#_color_light_gray_">Red TL  ·  Green TR  ·  Blue BL  ·  Yellow BR  ·  Crosshair on magenta marker</Text>
+
+            <PlanetView Planet="Moon" X="50" Y="70" Width="800" Height="640"
+                CameraX="@CamX" CameraY="@CamY" CameraZ="@CamZ"
+                CameraRoll="@CamRoll" CameraPitch="@CamPitch" CameraYaw="@CamYaw"
+                Tau="@Tau">
+
+                <!-- Marker at the bake's ray-cast hit point on the surface.
+                     The image's CENTER crosshair should land here. -->
+                <PlanetEllipse Latitude="-70.0" Longitude="180.0"
+                    Radius="15000" HeightAboveTerrain="500"
+                    LineColor="1.0 0.0 1.0 1.0" LineWidth="2000"
+                    FillColor="1.0 0.0 1.0 0.6"/>
+
+            </PlanetView>
+
+            <Text X="50" Y="725" Size="11" FillColor="#_color_white_">Camera (XYZ/RPY): @CamX(%.0f) @CamY(%.0f) @CamZ(%.0f)  ·  pitch @CamPitch(%.1f)°  yaw @CamYaw(%.1f)°  roll @CamRoll(%.1f)°</Text>
+            <Text X="50" Y="745" Size="11" FillColor="#_color_light_gray_">Bake center: world (0, -1632643, -594169)  =  lat -70° lon 180°  ·  FOV 60°  ·  Aspect 1.0</Text>
+            <Text X="50" Y="770" Size="11" FillColor="#_color_light_gray_">Edit InitialValue of Cam* in projective.xml to view from a different pose. The bake stays fixed where the &lt;PlanetProjectiveImage&gt; specifies.</Text>
+
+        </Panel>
+    </Window>
+</DCAPP>

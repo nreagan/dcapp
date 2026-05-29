@@ -733,6 +733,104 @@ static inline int clampi(int v, int lo, int hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+//-----------------------------------------------------------------------------
+// [SECTION] projective image bake
+//-----------------------------------------------------------------------------
+
+// RPY -> world basis; matches plCamera convention.
+static void
+pl__planet_rpy_to_basis(float fPitch, float fYaw, float fRoll, plVec3* ptFwd, plVec3* ptUp)
+{
+    static const plVec4 tBaseUp    = {0.0f, 1.0f, 0.0f, 0.0f};
+    static const plVec4 tBaseFwd   = {0.0f, 0.0f, 1.0f, 0.0f};
+    static const plVec4 tBaseRight = {-1.0f, 0.0f, 0.0f, 0.0f};
+
+    const plMat4 tX = pl_mat4_rotate_vec3(fPitch, tBaseRight.xyz);
+    const plMat4 tY = pl_mat4_rotate_vec3(fYaw,   tBaseUp.xyz);
+    const plMat4 tZ = pl_mat4_rotate_vec3(fRoll,  tBaseFwd.xyz);
+
+    plMat4 tR = pl_mul_mat4t(&tX, &tZ);
+    tR        = pl_mul_mat4t(&tY, &tR);
+
+    *ptFwd = pl_norm_vec4(pl_mul_mat4_vec4(&tR, tBaseFwd)).xyz;
+    *ptUp  = pl_norm_vec4(pl_mul_mat4_vec4(&tR, tBaseUp)).xyz;
+}
+
+// Forward south-polar stereographic in pl_planet_set_texture's frame.
+// fLam is user longitude (atan2(X, Z)). The -fR*cos(fLam) on fY is what
+// makes this match set_texture after its internal (-lon+180) flip.
+static inline void
+pl__planet_latlon_to_stereo(float R, float fLat, float fLam, float* pfX, float* pfY)
+{
+    const float fR = 2.0f * R * tanf(PL_PI_4 + 0.5f * fLat);
+    *pfX =  fR * sinf(fLam);
+    *pfY = -fR * cosf(fLam);
+}
+
+// Inverse of pl__planet_latlon_to_stereo: stereo (fX, fY) in set_texture's
+// frame -> world XYZ. fLam = atan2(fX, -fY) recovers the user longitude.
+static inline plVec3
+pl__planet_stereo_to_world(float R, float fX, float fY)
+{
+    const float fR_st = sqrtf(fX * fX + fY * fY);
+    const float fLat  = (fR_st < 1e-6f)
+                      ? -PL_PI_2
+                      : (2.0f * atanf(fR_st / (2.0f * R)) - PL_PI_2);
+    const float fLam  = (fR_st < 1e-6f) ? 0.0f : atan2f(fX, -fY);
+    const float c = cosf(fLat);
+    const float s = sinf(fLat);
+    plVec3 t = { R * c * sinf(fLam), R * s, R * c * cosf(fLam) };
+    return t;
+}
+
+// Ray-sphere intersection; sphere at origin. tDir must be unit.
+static inline bool
+pl__planet_ray_sphere(plVec3 tOrigin, plVec3 tDir, float R, plVec3* ptHitOut)
+{
+    const float b    = pl_dot_vec3(tOrigin, tDir);
+    const float c    = pl_dot_vec3(tOrigin, tOrigin) - R * R;
+    const float disc = b * b - c;
+    if (disc < 0.0f) return false;
+
+    const float sq = sqrtf(disc);
+    float t = -b - sq;
+    if (t < 0.0f) t = -b + sq;
+    if (t < 0.0f) return false;
+
+    ptHitOut->x = tOrigin.x + t * tDir.x;
+    ptHitOut->y = tOrigin.y + t * tDir.y;
+    ptHitOut->z = tOrigin.z + t * tDir.z;
+    return true;
+}
+
+// Capture-camera view-projection; matches plCamera perspective + flip.
+static plMat4
+pl__planet_build_capture_viewproj(plVec3 tEye, plVec3 tFwdIn, plVec3 tUpIn, float fFovY, float fAspect, float fNearZ, float fFarZ)
+{
+    plVec3 tFwd   = pl_norm_vec3(tFwdIn);
+    plVec3 tRight = pl_norm_vec3(pl_cross_vec3(tFwd, tUpIn));
+    plVec3 tUp    = pl_norm_vec3(pl_cross_vec3(tRight, tFwd));
+
+    plMat4 tView = {0};
+    tView.col[0].x = tRight.x; tView.col[1].x = tRight.y; tView.col[2].x = tRight.z;
+    tView.col[0].y = -tUp.x;   tView.col[1].y = -tUp.y;   tView.col[2].y = -tUp.z;
+    tView.col[0].z = tFwd.x;   tView.col[1].z = tFwd.y;   tView.col[2].z = tFwd.z;
+    tView.col[3].x = -pl_dot_vec3(tRight, tEye);
+    tView.col[3].y =  pl_dot_vec3(tUp,    tEye);
+    tView.col[3].z = -pl_dot_vec3(tFwd,   tEye);
+    tView.col[3].w = 1.0f;
+
+    const float fInv = 1.0f / tanf(fFovY * 0.5f);
+    plMat4 tProj = {0};
+    tProj.col[0].x = fInv / fAspect;
+    tProj.col[1].y = fInv;
+    tProj.col[2].z = fFarZ / (fFarZ - fNearZ);
+    tProj.col[2].w = 1.0f;
+    tProj.col[3].z = -fNearZ * fFarZ / (fFarZ - fNearZ);
+
+    return pl_mul_mat4(&tProj, &tView);
+}
+
 void
 pl_planet_set_texture(plPlanet* ptPlanet, plPlanetTexture* ptPlanetTexture, uint32_t uSlot)
 {
@@ -939,19 +1037,24 @@ pl_planet_set_texture(plPlanet* ptPlanet, plPlanetTexture* ptPlanetTexture, uint
 
                 for (uint32_t ix = 0; ix < uHorizontalExtent; ix++)
                 {
-                    if(ix * uInc > tFullData.uActiveWidth)
+                    const uint32_t uTileStartX = ix * uInc;
+                    const uint32_t uTileEndX = uTileStartX + uInc;
+
+                    if(uTileStartX >= tFullData.uActiveXOffset + tFullData.uActiveWidth)
                         break;
 
-                    if(ix * uInc + uInc < tFullData.uActiveXOffset)
+                    if(uTileEndX <= tFullData.uActiveXOffset)
                         continue;
 
                     for (uint32_t iy = 0; iy < uVerticalExtent; iy++)
                     {
+                        const uint32_t uTileStartY = iy * uInc;
+                        const uint32_t uTileEndY = uTileStartY + uInc;
 
-                        if(iy * uInc > tFullData.uActiveHeight)
+                        if(uTileStartY >= tFullData.uActiveYOffset + tFullData.uActiveHeight)
                             break;
 
-                        if(iy * uInc + uInc < tFullData.uActiveYOffset)
+                        if(uTileEndY <= tFullData.uActiveYOffset)
                             continue;
 
 
@@ -1002,11 +1105,6 @@ pl_planet_set_texture(plPlanet* ptPlanet, plPlanetTexture* ptPlanetTexture, uint
 
                         float fVStart = (float)iSubYOffset / (float)tFullData.uVirtualHeight;
                         float fVEnd = (float)iSubYEnd / (float)tFullData.uVirtualHeight;
-
-                        if(ix == 1 && iy == 1)
-                        {
-                            int a = 5;
-                        }
 
                         // float fXAdditionalOffset = (float)(iSubXOffset - ix * uInc) / (float)iFinalWidth;
                         // float fYAdditionalOffset = (float)(iSubYOffset - iy * uInc) / (float)iFinalHeight;
@@ -1064,6 +1162,219 @@ pl_planet_set_texture(plPlanet* ptPlanet, plPlanetTexture* ptPlanetTexture, uint
     }
 
     PL_FREE(abActiveTextureTiles);
+}
+
+void
+pl_planet_set_projective_image(plPlanet* ptPlanet, plPlanetProjectiveImage* ptOverlay, uint32_t uSlot)
+{
+    if (!ptPlanet || !ptOverlay || !ptOverlay->pcImagePath)
+        return;
+
+    // load capture image
+    int iCapW = 0, iCapH = 0, iCapC = 0;
+    unsigned char* pucCap = gptImage->load_from_file(
+        ptOverlay->pcImagePath, &iCapW, &iCapH, &iCapC, 4);
+    if (!pucCap || iCapW <= 0 || iCapH <= 0)
+    {
+        if (pucCap) gptImage->free(pucCap);
+        return;
+    }
+
+    const float R       = (float)ptPlanet->dRadius;
+    const float fAspect = ptOverlay->fAspectRatio > 0.0f
+                        ? ptOverlay->fAspectRatio
+                        : (float)iCapW / (float)iCapH;
+    const float fNearZ  = 1.0f;
+    const float fFarZ   = 1.0e9f;
+    if (ptOverlay->fVerticalFovRad <= 0.0f || ptOverlay->fVerticalFovRad >= PL_PI)
+    {
+        gptImage->free(pucCap);
+        return;
+    }
+
+    // RPY -> world basis
+    plVec3 tFwd, tUp;
+    pl__planet_rpy_to_basis(ptOverlay->fPitchRad, ptOverlay->fYawRad,
+                            ptOverlay->fRollRad, &tFwd, &tUp);
+
+    // capture view-projection
+    const plMat4 tVP = pl__planet_build_capture_viewproj(
+        ptOverlay->tPosition, tFwd, tUp, ptOverlay->fVerticalFovRad,
+        fAspect, fNearZ, fFarZ);
+
+    // center ray must hit the sphere
+    plVec3 tCenterHit;
+    if (!pl__planet_ray_sphere(ptOverlay->tPosition, tFwd, R, &tCenterHit))
+    {
+        gptImage->free(pucCap);
+        return;
+    }
+
+    const float fCenterLat = asinf(tCenterHit.y / R);
+    const float fCenterLam = atan2f(tCenterHit.x, tCenterHit.z);
+    float fCenterX = 0.0f, fCenterY = 0.0f;
+    pl__planet_latlon_to_stereo(R, fCenterLat, fCenterLam, &fCenterX, &fCenterY);
+
+    // Footprint extent by sampling the capture frustum. Four corners are not
+    // enough when a corner misses the sphere or the stereo extrema fall along
+    // an edge of the frustum.
+    const plVec3 tRight = pl_norm_vec3(pl_cross_vec3(tFwd, tUp));
+    const plVec3 tUpW   = pl_norm_vec3(pl_cross_vec3(tRight, tFwd));
+    const float fTanV = tanf(ptOverlay->fVerticalFovRad * 0.5f);
+    const float fTanH = fTanV * fAspect;
+
+    float fMinX = fCenterX, fMaxX = fCenterX;
+    float fMinY = fCenterY, fMaxY = fCenterY;
+    const int iFootprintSamples = 32;
+    for (int iy = 0; iy <= iFootprintSamples; iy++)
+    {
+        const float fSY = -1.0f + 2.0f * (float)iy / (float)iFootprintSamples;
+        for (int ix = 0; ix <= iFootprintSamples; ix++)
+        {
+            const float fSX = -1.0f + 2.0f * (float)ix / (float)iFootprintSamples;
+            plVec3 tRaw = {
+                tFwd.x + fSX * fTanH * tRight.x + fSY * fTanV * tUpW.x,
+                tFwd.y + fSX * fTanH * tRight.y + fSY * fTanV * tUpW.y,
+                tFwd.z + fSX * fTanH * tRight.z + fSY * fTanV * tUpW.z,
+            };
+            plVec3 tDir = pl_norm_vec3(tRaw);
+            plVec3 tHit;
+            if (!pl__planet_ray_sphere(ptOverlay->tPosition, tDir, R, &tHit))
+                continue;
+            const float fLat = asinf(tHit.y / R);
+            const float fLam = atan2f(tHit.x, tHit.z);
+            float fCornerX = 0.0f, fCornerY = 0.0f;
+            pl__planet_latlon_to_stereo(R, fLat, fLam, &fCornerX, &fCornerY);
+            if (fCornerX < fMinX) fMinX = fCornerX;
+            if (fCornerX > fMaxX) fMaxX = fCornerX;
+            if (fCornerY < fMinY) fMinY = fCornerY;
+            if (fCornerY > fMaxY) fMaxY = fCornerY;
+        }
+    }
+
+    // meters-per-pixel from center GSD
+    const plVec3 tToHit = {
+        tCenterHit.x - ptOverlay->tPosition.x,
+        tCenterHit.y - ptOverlay->tPosition.y,
+        tCenterHit.z - ptOverlay->tPosition.z,
+    };
+    const float fDist = sqrtf(tToHit.x*tToHit.x + tToHit.y*tToHit.y + tToHit.z*tToHit.z);
+    float fMpp = (2.0f * fDist * fTanV) / (float)iCapH;
+    if (fMpp <= 0.0f) fMpp = 1.0f;
+
+    const float fHalfX = pl_max(fMaxX - fCenterX, fCenterX - fMinX) * 1.02f + 2.0f * fMpp;
+    const float fHalfY = pl_max(fMaxY - fCenterY, fCenterY - fMinY) * 1.02f + 2.0f * fMpp;
+
+    int iOutW = (int)ceilf(2.0f * fHalfX / fMpp);
+    int iOutH = (int)ceilf(2.0f * fHalfY / fMpp);
+    if (iOutW < 2) iOutW = 2;
+    if (iOutH < 2) iOutH = 2;
+
+    // cap largest dim
+    const int iMaxDim = 4096;
+    int iLargest = pl_max(iOutW, iOutH);
+    if (iLargest > iMaxDim)
+    {
+        const float fScale = (float)iLargest / (float)iMaxDim;
+        fMpp *= fScale;
+        iOutW = (int)ceilf(2.0f * fHalfX / fMpp);
+        iOutH = (int)ceilf(2.0f * fHalfY / fMpp);
+        if (iOutW < 2) iOutW = 2;
+        if (iOutH < 2) iOutH = 2;
+    }
+
+    // allocate intermediate raster (transparent)
+    const size_t szOut = (size_t)iOutW * (size_t)iOutH * 4;
+    unsigned char* pucOut = (unsigned char*)PL_ALLOC(szOut);
+    if (!pucOut)
+    {
+        gptImage->free(pucCap);
+        return;
+    }
+    memset(pucOut, 0, szOut);
+
+    const float fHalfW_m = 0.5f * (float)iOutW * fMpp;
+    const float fHalfH_m = 0.5f * (float)iOutH * fMpp;
+
+    // resample: stereographic pixel -> world -> capture UV
+    for (int j = 0; j < iOutH; j++)
+    {
+        for (int i = 0; i < iOutW; i++)
+        {
+            const float fSX = fCenterX - fHalfW_m + ((float)i + 0.5f) * fMpp;
+            const float fSY = fCenterY - fHalfH_m + ((float)j + 0.5f) * fMpp;
+
+            const plVec3 tWorld = pl__planet_stereo_to_world(R, fSX, fSY);
+            const plVec4 tWorld4 = { tWorld.x, tWorld.y, tWorld.z, 1.0f };
+            const plVec4 tClip   = pl_mul_mat4_vec4(&tVP, tWorld4);
+            if (tClip.w <= 0.0f) continue;
+
+            const float fU = (tClip.x / tClip.w) * 0.5f + 0.5f;
+            const float fV = (tClip.y / tClip.w) * 0.5f + 0.5f;
+            if (fU < 0.0f || fU > 1.0f || fV < 0.0f || fV > 1.0f) continue;
+
+            // surface must face capture
+            const plVec3 tNorm  = pl_norm_vec3(tWorld);
+            const plVec3 tToCap = pl_norm_vec3((plVec3){
+                ptOverlay->tPosition.x - tWorld.x,
+                ptOverlay->tPosition.y - tWorld.y,
+                ptOverlay->tPosition.z - tWorld.z });
+            if (pl_dot_vec3(tNorm, tToCap) <= 0.0f) continue;
+
+            // bilinear sample
+            const float fx = fU * (float)(iCapW - 1);
+            const float fy = fV * (float)(iCapH - 1);
+            const int ix0 = (int)floorf(fx);
+            const int iy0 = (int)floorf(fy);
+            const int ix1 = pl_min(ix0 + 1, iCapW - 1);
+            const int iy1 = pl_min(iy0 + 1, iCapH - 1);
+            const float fxf = fx - (float)ix0;
+            const float fyf = fy - (float)iy0;
+
+            const unsigned char* p00 = &pucCap[(iy0 * iCapW + ix0) * 4];
+            const unsigned char* p10 = &pucCap[(iy0 * iCapW + ix1) * 4];
+            const unsigned char* p01 = &pucCap[(iy1 * iCapW + ix0) * 4];
+            const unsigned char* p11 = &pucCap[(iy1 * iCapW + ix1) * 4];
+
+            unsigned char* pOut = &pucOut[(j * iOutW + i) * 4];
+            for (int k = 0; k < 4; k++)
+            {
+                const float a = (float)p00[k] * (1.0f - fxf) + (float)p10[k] * fxf;
+                const float b = (float)p01[k] * (1.0f - fxf) + (float)p11[k] * fxf;
+                const float v = a * (1.0f - fyf) + b * fyf;
+                pOut[k] = (unsigned char)(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v));
+            }
+            pOut[3] = 255;
+        }
+    }
+
+    gptImage->free(pucCap);
+
+    // write intermediate PNG and feed existing pipeline
+    char acTmpPath[128];
+    snprintf(acTmpPath, sizeof(acTmpPath), "projective_overlay_%u.png", uSlot);
+
+    plImageWriteInfo tWriteInfo = {
+        .iWidth      = iOutW,
+        .iHeight     = iOutH,
+        .iComponents = 4,
+        .iByteStride = iOutW * 4
+    };
+    if (!gptImage->write(acTmpPath, pucOut, &tWriteInfo))
+    {
+        PL_FREE(pucOut);
+        return;
+    }
+    PL_FREE(pucOut);
+
+    const float fRad2Deg = 180.0f / PL_PI;
+    plPlanetTexture tTexture = {
+        .pcPath          = acTmpPath,
+        .fMetersPerPixel = fMpp,
+        .fLatitude       = fCenterLat * fRad2Deg,
+        .fLongitude      = fCenterLam * fRad2Deg,
+    };
+    pl_planet_set_texture(ptPlanet, &tTexture, uSlot);
 }
 
 bool
@@ -2492,6 +2803,7 @@ pl_load_ext(plApiRegistryI* ptApiRegistry, bool bReload)
         .draw_line                = pl_draw_line,
         .draw_text                = pl_draw_text,
         .set_texture              = pl_planet_set_texture,
+        .set_projective_image     = pl_planet_set_projective_image,
         .create_view              = pl_create_planet_view,
         .cleanup_view             = pl_cleanup_planet_view,
         .render_view              = pl_render_to_planet_view,

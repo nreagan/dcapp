@@ -507,6 +507,16 @@ typedef struct {
     DcValue   last_fire_refresh_value; // edge detection (fire on change)
 } _PlanetTextureEntry;
 
+typedef struct {
+    char     *source;
+    _ValIndex x, y, z;                 // capture camera position (meters, world)
+    _ValIndex roll, pitch, yaw;        // capture camera orientation (degrees)
+    _ValIndex vertical_fov;            // vertical FOV (degrees)
+    _ValIndex aspect_ratio;
+    _ValIndex fire_refresh;
+    DcValue   last_fire_refresh_value;
+} _PlanetProjectiveImageEntry;
+
 #define PLANET_INDEX_UNDEFINED 0
 #define PLANET_VIEW_INDEX_UNDEFINED 0
 
@@ -519,6 +529,9 @@ typedef struct __PlanetDef {
 
     // texture overlays
     _PlanetTextureEntry *sb_textures; // stretchy buffer
+
+    // projective image overlays (perspective captures baked to the surface)
+    _PlanetProjectiveImageEntry *sb_projective_images;
 
     // shader overrides (library; per-view selection via PlanetView ShaderIndex)
     _PlanetShaderEntry *sb_shaders; // stretchy buffer

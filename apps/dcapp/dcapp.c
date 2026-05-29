@@ -21,6 +21,7 @@ PL_EXPORT void  pl_app_update(_AppData *app_data);
 void           *get_variable_value_addr(const char *name);
 static void     _flush_deferred_sets(_AppData *app_data);
 static bool     _build_planet_texture(_AppData *app_data, _PlanetTextureEntry *entry, plPlanetTexture *out);
+static bool     _build_planet_projective_image(_AppData *app_data, _PlanetProjectiveImageEntry *entry, plPlanetProjectiveImage *out);
 static void     _init_planets(_AppData *app_data);
 static void     _update_planet_defs(_AppData *app_data);
 static void     _load_apis(plApiRegistryI *api_registry);
@@ -270,6 +271,10 @@ PL_EXPORT void pl_app_shutdown(_AppData *app_data) {
                 if (def->sb_textures[j].source) free(def->sb_textures[j].source);
             }
             sbfree(def->sb_textures);
+            for (int j = 0; j < sbcount(def->sb_projective_images); j++) {
+                if (def->sb_projective_images[j].source) free(def->sb_projective_images[j].source);
+            }
+            sbfree(def->sb_projective_images);
         }
         sbfree(app_data->sb_planet_defs);
         sbfree(app_data->sb_planet_view_node_indices);
@@ -773,6 +778,30 @@ static bool _build_planet_texture(_AppData *app_data, _PlanetTextureEntry *entry
     return true;
 }
 
+static bool _build_planet_projective_image(_AppData *app_data, _PlanetProjectiveImageEntry *entry, plPlanetProjectiveImage *out) {
+    if (!entry->source || entry->source[0] == '\0') return false;
+    if (!_ext_vfs->does_file_exist(entry->source)) return false;
+    memset(out, 0, sizeof(*out));
+    out->pcImagePath = entry->source;
+    if (entry->x != DC_APP_VAL_INDEX_UNDEFINED)
+        out->tPosition.x = (float)dc_app_lookup_get_value(app_data->lookup, entry->x)->value_double;
+    if (entry->y != DC_APP_VAL_INDEX_UNDEFINED)
+        out->tPosition.y = (float)dc_app_lookup_get_value(app_data->lookup, entry->y)->value_double;
+    if (entry->z != DC_APP_VAL_INDEX_UNDEFINED)
+        out->tPosition.z = (float)dc_app_lookup_get_value(app_data->lookup, entry->z)->value_double;
+    if (entry->pitch != DC_APP_VAL_INDEX_UNDEFINED)
+        out->fPitchRad = pl_radiansf((float)dc_app_lookup_get_value(app_data->lookup, entry->pitch)->value_double);
+    if (entry->yaw != DC_APP_VAL_INDEX_UNDEFINED)
+        out->fYawRad = pl_radiansf((float)dc_app_lookup_get_value(app_data->lookup, entry->yaw)->value_double);
+    if (entry->roll != DC_APP_VAL_INDEX_UNDEFINED)
+        out->fRollRad = pl_radiansf((float)dc_app_lookup_get_value(app_data->lookup, entry->roll)->value_double);
+    if (entry->vertical_fov != DC_APP_VAL_INDEX_UNDEFINED)
+        out->fVerticalFovRad = pl_radiansf((float)dc_app_lookup_get_value(app_data->lookup, entry->vertical_fov)->value_double);
+    if (entry->aspect_ratio != DC_APP_VAL_INDEX_UNDEFINED)
+        out->fAspectRatio = (float)dc_app_lookup_get_value(app_data->lookup, entry->aspect_ratio)->value_double;
+    return true;
+}
+
 static void _init_planets(_AppData *app_data) {
     int def_count  = sbcount(app_data->sb_planet_defs);
     int view_count = sbcount(app_data->sb_planet_view_node_indices);
@@ -899,6 +928,15 @@ static void _init_planets(_AppData *app_data) {
             }
         }
 
+        // initial projective image overlay
+        if (sbcount(def->sb_projective_images) > 0) {
+            plPlanetProjectiveImage proj;
+            if (_build_planet_projective_image(app_data, &def->sb_projective_images[0], &proj)) {
+                DC_LOG_INFO("Planet", "  [%d] projective: %s", i, proj.pcImagePath);
+                _ext_planet->set_projective_image(planet, &proj, 0);
+            }
+        }
+
         // store planet
         sbpush(app_data->sb_planets, planet);
         def->index = (uint8_t)(sbcount(app_data->sb_planets) - 1); // index 0 is sentinel
@@ -978,6 +1016,20 @@ static void _update_planet_defs(_AppData *app_data) {
                     _ext_planet->set_texture(planet, NULL, 0);
                 }
                 tex->last_fire_refresh_value = *refresh_val;
+            }
+        }
+
+        // projective image refresh check
+        for (int t = 0; t < sbcount(def->sb_projective_images); t++) {
+            _PlanetProjectiveImageEntry *p = &def->sb_projective_images[t];
+            if (p->fire_refresh == DC_APP_VAL_INDEX_UNDEFINED) continue;
+            DcValue *refresh_val = dc_app_lookup_get_value(app_data->lookup, p->fire_refresh);
+            if (!dc_value_is_equal(refresh_val, &p->last_fire_refresh_value)) {
+                plPlanetProjectiveImage proj;
+                if (_build_planet_projective_image(app_data, p, &proj)) {
+                    _ext_planet->set_projective_image(planet, &proj, 0);
+                }
+                p->last_fire_refresh_value = *refresh_val;
             }
         }
 

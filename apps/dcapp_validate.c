@@ -539,11 +539,12 @@ bool _is_valid_child(DcAppElemType parent_type, DcAppElemType child_type) {
         }
     }
 
-    // Planet can contain PlanetData, PlanetTexture, and PlanetShader
+    // Planet can contain data plus texture/shader overlays
     if (parent_type == DC_APP_ELEM_TYPE_PLANET) {
         switch (child_type) {
             case DC_APP_ELEM_TYPE_PLANET_DATA:
             case DC_APP_ELEM_TYPE_PLANET_TEXTURE:
+            case DC_APP_ELEM_TYPE_PLANET_PROJECTIVE_IMAGE:
             case DC_APP_ELEM_TYPE_PLANET_SHADER:
                 return true;
             default:
@@ -690,6 +691,7 @@ bool _is_valid_child(DcAppElemType parent_type, DcAppElemType child_type) {
         case DC_APP_ELEM_TYPE_VERTEX:
         case DC_APP_ELEM_TYPE_PLANET_DATA:
         case DC_APP_ELEM_TYPE_PLANET_TEXTURE:
+        case DC_APP_ELEM_TYPE_PLANET_PROJECTIVE_IMAGE:
         case DC_APP_ELEM_TYPE_PLANET_SHADER:
         case DC_APP_ELEM_TYPE_LOGIC:
         case DC_APP_ELEM_TYPE_FUNCTION:
@@ -953,6 +955,20 @@ void _validate_required_attributes(ValidationContext *ctx, xmlNodePtr node, DcAp
             // All attributes are optional (dynamic, can be set via variables at runtime)
             break;
 
+        case DC_APP_ELEM_TYPE_PLANET_PROJECTIVE_IMAGE: {
+            const char *required_attrs[] = {"File", "X", "Y", "Z", "VerticalFov", NULL};
+            for (int i = 0; required_attrs[i]; i++) {
+                xmlChar *attr = xmlGetProp(node, BAD_CAST required_attrs[i]);
+                if (!attr) {
+                    DC_LOG_ERROR("Validate", "<PlanetProjectiveImage> missing required attribute '%s' (line %ld)", required_attrs[i], xmlGetLineNo(node));
+                    ctx->error_count++;
+                } else {
+                    xmlFree(attr);
+                }
+            }
+            break;
+        }
+
         case DC_APP_ELEM_TYPE_PLANET_SHADER: {
             xmlChar *index = xmlGetProp(node, BAD_CAST "Index");
             if (!index) {
@@ -1011,6 +1027,7 @@ static const char *_valid_attrs_planet[]         = {"Name", "LightDirectionX", "
 static const char *_valid_attrs_planet_view[]    = {"Planet", "ShaderIndex", "Tau", "Flatten", "PositionX", "X", "PositionY", "Y", "DimensionX", "Width", "DimensionY", "Height", "LocalAlignX", "HorizontalAlign", "LocalAlignY", "VerticalAlign", "ParentAlignX", "ParentAlignY", "Rotation", "Rotate", "PivotPositionX", "PivotX", "PivotPositionY", "PivotY", "PivotParentAlignX", "PivotParentAlignY", "PivotLocalAlignX", "PivotLocalAlignY", "CameraLatitude", "CameraLongitude", "CameraElevation", "CameraHeading", "CameraX", "CameraY", "CameraZ", "CameraRoll", "CameraPitch", "CameraYaw", "CameraOrthographic", "NegateX", "NegateY", NULL};
 static const char *_valid_attrs_planet_data[]    = {"File", NULL};
 static const char *_valid_attrs_planet_texture[] = {"File", "MetersPerPixel", "Latitude", "Longitude", "FireRefresh", NULL};
+static const char *_valid_attrs_planet_projective_image[] = {"File", "X", "Y", "Z", "Roll", "Pitch", "Yaw", "VerticalFov", "AspectRatio", "FireRefresh", NULL};
 static const char *_valid_attrs_planet_shader[]  = {"Index", "VertexShader", "FragmentShader", NULL};
 static const char *_valid_attrs_planet_overlay[] = {"Planet", "HeightAboveTerrain", "Latitude", "Longitude", "Radius", "RadiusX", "RadiusY", "Rotation", "Segments", "Size", NULL};
 static const char *_valid_attrs_planet_geojson[] = {"File", "Planet", "HeightAboveTerrain", NULL};
@@ -1217,6 +1234,9 @@ static bool _is_valid_attr_for_elem(const char *attr_name, DcAppElemType elem_ty
 
         case DC_APP_ELEM_TYPE_PLANET_TEXTURE:
             return _attr_in_list(attr_name, _valid_attrs_planet_texture);
+
+        case DC_APP_ELEM_TYPE_PLANET_PROJECTIVE_IMAGE:
+            return _attr_in_list(attr_name, _valid_attrs_planet_projective_image);
 
         case DC_APP_ELEM_TYPE_PLANET_SHADER:
             return _attr_in_list(attr_name, _valid_attrs_planet_shader);

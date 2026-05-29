@@ -57,6 +57,7 @@ static void          _planet_shader_abs_to_vfs(const char *abs_path, char *vfs_o
 static _NodeIndex    _process_xml_node_planet_sphere(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_text(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_texture(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
+static _NodeIndex    _process_xml_node_planet_projective_image(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_view(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_polygon(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_rectangle(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
@@ -334,6 +335,9 @@ static _NodeIndex _process_xml_node(_AppData *app_data, xmlNodePtr xml_node, _No
 
         case DC_APP_ELEM_TYPE_PLANET_TEXTURE:
             return _process_xml_node_planet_texture(app_data, xml_node, parent_node_index, parent_elem_type, directory);
+
+        case DC_APP_ELEM_TYPE_PLANET_PROJECTIVE_IMAGE:
+            return _process_xml_node_planet_projective_image(app_data, xml_node, parent_node_index, parent_elem_type, directory);
 
         case DC_APP_ELEM_TYPE_PLANET_VIEW:
             return _process_xml_node_planet_view(app_data, xml_node, parent_node_index, parent_elem_type, directory);
@@ -4310,6 +4314,100 @@ static _NodeIndex _process_xml_node_planet_texture(_AppData *app_data, xmlNodePt
     }
 
     sbpush(def->sb_textures, entry);
+
+    return NODE_INDEX_UNDEFINED;
+}
+
+static _NodeIndex _process_xml_node_planet_projective_image(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory) {
+    (void)parent_node_index;
+
+    if (parent_elem_type != DC_APP_ELEM_TYPE_PLANET) {
+        DC_LOG_ERROR("PlanetProjectiveImage", "Invalid parent element type: %s", dc_app_elem_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    _PlanetDef *def = &app_data->sb_planet_defs[sbcount(app_data->sb_planet_defs) - 1];
+
+    if (sbcount(def->sb_projective_images) >= 1) {
+        DC_LOG_ERROR("PlanetProjectiveImage", "Only one <PlanetProjectiveImage> per <Planet> is currently supported (line %ld)", xmlGetLineNo(xml_node));
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    _PlanetProjectiveImageEntry entry = {0};
+
+    // file path
+    xmlChar *raw_file = xmlGetProp(xml_node, BAD_CAST "File");
+    if (raw_file) {
+        char cleaned[DC_UTILS_FILEPATH_BUFFER_SIZE];
+        strncpy(cleaned, (const char *)raw_file, DC_UTILS_FILEPATH_BUFFER_SIZE - 1);
+        cleaned[DC_UTILS_FILEPATH_BUFFER_SIZE - 1] = '\0';
+        xmlFree(raw_file);
+
+        char abs_path[DC_UTILS_FILEPATH_BUFFER_SIZE];
+        if (dc_utils_is_relative_path(cleaned)) {
+            dc_utils_join_paths(directory, cleaned, abs_path, sizeof(abs_path));
+        } else {
+            strcpy(abs_path, cleaned);
+        }
+        char vfs_path[DC_UTILS_FILEPATH_BUFFER_SIZE];
+        _planet_shader_abs_to_vfs(abs_path, vfs_path, sizeof(vfs_path));
+        entry.source = strdup(vfs_path);
+    }
+
+    // position
+    xmlChar *raw_x = xmlGetProp(xml_node, BAD_CAST "X");
+    if (raw_x) {
+        entry.x = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_x);
+        xmlFree(raw_x);
+    }
+    xmlChar *raw_y = xmlGetProp(xml_node, BAD_CAST "Y");
+    if (raw_y) {
+        entry.y = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_y);
+        xmlFree(raw_y);
+    }
+    xmlChar *raw_z = xmlGetProp(xml_node, BAD_CAST "Z");
+    if (raw_z) {
+        entry.z = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_z);
+        xmlFree(raw_z);
+    }
+
+    // orientation (degrees)
+    xmlChar *raw_roll = xmlGetProp(xml_node, BAD_CAST "Roll");
+    if (raw_roll) {
+        entry.roll = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_roll);
+        xmlFree(raw_roll);
+    }
+    xmlChar *raw_pitch = xmlGetProp(xml_node, BAD_CAST "Pitch");
+    if (raw_pitch) {
+        entry.pitch = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_pitch);
+        xmlFree(raw_pitch);
+    }
+    xmlChar *raw_yaw = xmlGetProp(xml_node, BAD_CAST "Yaw");
+    if (raw_yaw) {
+        entry.yaw = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_yaw);
+        xmlFree(raw_yaw);
+    }
+
+    // lens
+    xmlChar *raw_vfov = xmlGetProp(xml_node, BAD_CAST "VerticalFov");
+    if (raw_vfov) {
+        entry.vertical_fov = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_vfov);
+        xmlFree(raw_vfov);
+    }
+    xmlChar *raw_aspect = xmlGetProp(xml_node, BAD_CAST "AspectRatio");
+    if (raw_aspect) {
+        entry.aspect_ratio = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_DOUBLE, (const char *)raw_aspect);
+        xmlFree(raw_aspect);
+    }
+
+    // edge-triggered refresh
+    xmlChar *raw_fire_refresh = xmlGetProp(xml_node, BAD_CAST "FireRefresh");
+    if (raw_fire_refresh) {
+        entry.fire_refresh = dc_app_create_and_register_typed_value_from_string(app_data->lookup, DC_VALUE_TYPE_INTEGER, (const char *)raw_fire_refresh);
+        xmlFree(raw_fire_refresh);
+    }
+
+    sbpush(def->sb_projective_images, entry);
 
     return NODE_INDEX_UNDEFINED;
 }

@@ -24,7 +24,7 @@ Index of this file:
 // [SECTION] apis
 //-----------------------------------------------------------------------------
 
-#define plPlanetI_version {0, 3, 0}
+#define plPlanetI_version {0, 4, 0}
 
 //-----------------------------------------------------------------------------
 // [SECTION] includes
@@ -47,6 +47,7 @@ typedef struct _plPlanet                   plPlanet;
 typedef struct _plPlanetView               plPlanetView;
 typedef struct _plPlanetViewInit           plPlanetViewInit;
 typedef struct _plPlanetTexture            plPlanetTexture;
+typedef struct _plPlanetProjectiveImage    plPlanetProjectiveImage;
 
 // enums/flags
 typedef int plPlanetFlags;
@@ -78,6 +79,7 @@ typedef struct _plPlanetI
     void      (*cleanup_planet)(plPlanet*);
 
     void (*set_texture)(plPlanet*, plPlanetTexture*, uint32_t index);
+    void (*set_projective_image)(plPlanet*, plPlanetProjectiveImage*, uint32_t index);
 
     // per frame
     void (*prepare)(plPlanet*, plCommandBuffer*);
@@ -122,6 +124,17 @@ typedef struct _plPlanetTexture
     float       fLongitude;
     float       fLatitude;
 } plPlanetTexture;
+
+typedef struct _plPlanetProjectiveImage
+{
+    const char* pcImagePath;
+    plVec3      tPosition;
+    float       fPitchRad; // rotation about right vector
+    float       fYawRad;   // rotation about up vector
+    float       fRollRad;  // rotation about forward vector
+    float       fVerticalFovRad;
+    float       fAspectRatio;
+} plPlanetProjectiveImage;
 
 typedef struct _plPlanetInit
 {
