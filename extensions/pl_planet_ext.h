@@ -24,7 +24,7 @@ Index of this file:
 // [SECTION] apis
 //-----------------------------------------------------------------------------
 
-#define plPlanetI_version {0, 6, 0}
+#define plPlanetI_version {0, 7, 0}
 
 //-----------------------------------------------------------------------------
 // [SECTION] includes
@@ -45,6 +45,7 @@ typedef struct _plPlanetRuntimeOptions     plPlanetRuntimeOptions;
 typedef struct _plPlanetStreamStats        plPlanetStreamStats;
 typedef struct _plPlanetViewRuntimeOptions plPlanetViewRuntimeOptions;
 typedef struct _plPlanet                   plPlanet;
+typedef struct _plPlanetMesh               plPlanetMesh;
 typedef struct _plPlanetView               plPlanetView;
 typedef struct _plPlanetViewInit           plPlanetViewInit;
 typedef struct _plPlanetTexture            plPlanetTexture;
@@ -78,6 +79,8 @@ typedef struct _plPlanetI
     // terrain setup/finalization/shutdown
     plPlanet* (*create_planet) (plCommandBuffer*, plPlanetInit, plPlanetProcessInfo*);
     void      (*cleanup_planet)(plPlanet*);
+    plPlanetMesh* (*load_mesh)   (plCommandBuffer*, const char* path);
+    void          (*cleanup_mesh)(plPlanetMesh*);
 
     void (*set_texture)(plPlanet*, plPlanetTexture*, uint32_t index);
 
@@ -97,6 +100,7 @@ typedef struct _plPlanetI
     void (*draw_polygon)        (plPlanetView*, plVec3* points, uint32_t count, float line_width, uint32_t color);
     void (*draw_polygon_filled) (plPlanetView*, plVec3* points, uint32_t count, uint32_t color);
     void (*draw_line)       (plPlanetView*, plVec3* points, uint32_t count, float line_width, uint32_t color);
+    void (*draw_mesh)           (plPlanetView*, plPlanetMesh*, uint32_t color);
     void (*draw_text)           (plPlanetView*, plCamera*, plVec3 position, const char* text, float size_meters, uint32_t color);
 
     // debugging helpers mostly

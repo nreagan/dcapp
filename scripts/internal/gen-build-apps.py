@@ -372,13 +372,61 @@ with pl.project("apps"):
                     pl.add_include_directories("/opt/homebrew/opt/libxml2/include/libxml2")
                     pl.add_linker_flags("-lxml2")
 
-    # dcapp-planet-chunkgen
-    with pl.target("dcapp-planet-chunkgen", pl.TargetType.DYNAMIC_LIBRARY):
+    # dcapp-planet-backfill
+    with pl.target("dcapp-planet-backfill", pl.TargetType.DYNAMIC_LIBRARY):
 
-        pl.set_output_binary("dcapp-planet-chunkgen")
+        pl.set_output_binary("dcapp-planet-backfill")
 
         pl.add_source_files(
-            fwd(os.path.relpath(dcapp_home_abs + "/apps/dcapp_planet_chunkgen.c", output_dir_abs)),
+            fwd(os.path.relpath(dcapp_home_abs + "/apps/dcapp_planet_backfill.c", output_dir_abs)),
+            fwd(os.path.relpath(dcapp_home_abs + "/src/geo.c", output_dir_abs)),
+            fwd(os.path.relpath(dcapp_home_abs + "/src/utils/file.c", output_dir_abs)),
+            fwd(os.path.relpath(dcapp_home_abs + "/src/utils/log.c", output_dir_abs)),
+        )
+
+        # release config
+        with pl.configuration("release"):
+
+            # win32
+            with pl.platform("Windows"):
+                with pl.compiler("msvc"):
+                    pl.add_linker_flags("-nologo", "-noimplib", "-noexp")
+
+            # linux
+            with pl.platform("Linux"):
+                with pl.compiler("gcc"):
+                    pass
+
+            # mac os
+            with pl.platform("Darwin"):
+                with pl.compiler("clang"):
+                    pass
+
+        # debug config
+        with pl.configuration("debug"):
+
+            # win32
+            with pl.platform("Windows"):
+                with pl.compiler("msvc"):
+                    pl.add_linker_flags("-nologo", "-noimplib", "-noexp")
+
+            # linux
+            with pl.platform("Linux"):
+                with pl.compiler("gcc"):
+                    pl.add_compiler_flags("--debug", "-g")
+
+            # mac os
+            with pl.platform("Darwin"):
+                with pl.compiler("clang"):
+                    pass
+
+    # dcapp-planet-preprocess
+    with pl.target("dcapp-planet-preprocess", pl.TargetType.DYNAMIC_LIBRARY):
+
+        pl.set_output_binary("dcapp-planet-preprocess")
+
+        pl.add_source_files(
+            fwd(os.path.relpath(dcapp_home_abs + "/apps/dcapp_planet_preprocess.c", output_dir_abs)),
             fwd(os.path.relpath(dcapp_home_abs + "/src/utils/file.c", output_dir_abs)),
             fwd(os.path.relpath(dcapp_home_abs + "/src/utils/log.c", output_dir_abs)),
         )

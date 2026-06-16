@@ -229,7 +229,8 @@ The build produces several command-line tools in the `bin/` directory:
 | `dcapp` | Main runtime. Loads and renders a dcapp XML display file. |
 | `dcapp-validate` | Validates a dcapp XML file for correctness without running it. |
 | `dcapp-genheader` | Generates a C header from a dcapp XML file, used when building samples that include custom logic. |
-| `dcapp-planet-chunkgen` | Generates chunked terrain data for the planet rendering primitive. |
+| `dcapp-planet-preprocess` | Generates chunked terrain data for the planet rendering primitive. |
+| `dcapp-planet-backfill` | Generates optional reference spheroid meshes from planet metadata. |
 
 Each tool has `.sh` (Linux/macOS) and `.bat` (Windows) wrapper scripts in `bin/`.
 

@@ -75,8 +75,10 @@ rm -f ../../pilotlight/out/dcapp.dylib
 rm -f ../../pilotlight/out/dcapp_*.dylib
 rm -f ../../pilotlight/out/dcapp-genheader
 rm -f ../../pilotlight/out/dcapp-validate
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen.dylib
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen_*.dylib
+rm -f ../../pilotlight/out/dcapp-planet-backfill.dylib
+rm -f ../../pilotlight/out/dcapp-planet-backfill_*.dylib
+rm -f ../../pilotlight/out/dcapp-planet-preprocess.dylib
+rm -f ../../pilotlight/out/dcapp-planet-preprocess_*.dylib
 rm -f ../../pilotlight/out/dcapp-planet-snapshot.dylib
 rm -f ../../pilotlight/out/dcapp-planet-snapshot_*.dylib
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~ dc_draw_ext | release ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -375,17 +377,17 @@ fi
 echo ${CYAN}Results: ${NC} ${PL_RESULT}
 echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
 
-#~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | release ~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-backfill | release ~~~~~~~~~~~~~~~~~~~~~~~~
 
 PL_RESULT=${BOLD}${GREEN}Successful.${NC}
 PL_DEFINES=""
-PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb -I/opt/homebrew/opt/gdal/include "
+PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb "
 PL_LINK_DIRECTORIES="-L../../pilotlight/out -Wl,-rpath,../../pilotlight/out -L$(brew --prefix)/lib -Wl,-rpath,$(brew --prefix)/lib "
 PL_COMPILER_FLAGS="-fmodules -ObjC -fPIC -DNDEBUG "
-PL_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib -lgdal "
+PL_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib "
 PL_STATIC_LINK_LIBRARIES=""
 PL_DYNAMIC_LINK_LIBRARIES=""
-PL_SOURCES="../../apps/dcapp_planet_chunkgen.c ../../src/utils/file.c ../../src/utils/log.c "
+PL_SOURCES="../../apps/dcapp_planet_backfill.c ../../src/geo.c ../../src/utils/file.c ../../src/utils/log.c "
 PL_LINK_FRAMEWORKS="-framework Metal -framework MetalKit -framework Cocoa -framework IOKit -framework CoreVideo -framework QuartzCore "
 
 # add flags for specific hardware
@@ -397,10 +399,52 @@ fi
 
 # run compiler (and linker)
 echo
-echo ${YELLOW}Step: dcapp-planet-chunkgen${NC}
+echo ${YELLOW}Step: dcapp-planet-backfill${NC}
 echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
 echo ${CYAN}Compiling and Linking...${NC}
-clang -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINK_FRAMEWORKS $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-chunkgen.dylib"
+clang -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINK_FRAMEWORKS $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-backfill.dylib"
+
+# check build status
+if [ $? -ne 0 ]
+then
+    PL_RESULT=${BOLD}${RED}Failed.${NC}
+    PL_BUILD_STATUS=1
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+popd >/dev/null
+exit 1
+fi
+
+# print results
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+
+#~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-preprocess | release ~~~~~~~~~~~~~~~~~~~~~~~~
+
+PL_RESULT=${BOLD}${GREEN}Successful.${NC}
+PL_DEFINES=""
+PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb -I/opt/homebrew/opt/gdal/include "
+PL_LINK_DIRECTORIES="-L../../pilotlight/out -Wl,-rpath,../../pilotlight/out -L$(brew --prefix)/lib -Wl,-rpath,$(brew --prefix)/lib "
+PL_COMPILER_FLAGS="-fmodules -ObjC -fPIC -DNDEBUG "
+PL_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib -lgdal "
+PL_STATIC_LINK_LIBRARIES=""
+PL_DYNAMIC_LINK_LIBRARIES=""
+PL_SOURCES="../../apps/dcapp_planet_preprocess.c ../../src/utils/file.c ../../src/utils/log.c "
+PL_LINK_FRAMEWORKS="-framework Metal -framework MetalKit -framework Cocoa -framework IOKit -framework CoreVideo -framework QuartzCore "
+
+# add flags for specific hardware
+if [[ "$ARCH" == "arm64" ]]; then
+    PL_COMPILER_FLAGS+="-arch arm64 "
+else
+    PL_COMPILER_FLAGS+="-arch x86_64 "
+fi
+
+# run compiler (and linker)
+echo
+echo ${YELLOW}Step: dcapp-planet-preprocess${NC}
+echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
+echo ${CYAN}Compiling and Linking...${NC}
+clang -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINK_FRAMEWORKS $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-preprocess.dylib"
 
 # check build status
 if [ $? -ne 0 ]
@@ -492,8 +536,10 @@ rm -f ../../pilotlight/out/dcapp.dylib
 rm -f ../../pilotlight/out/dcapp_*.dylib
 rm -f ../../pilotlight/out/dcapp-genheader
 rm -f ../../pilotlight/out/dcapp-validate
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen.dylib
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen_*.dylib
+rm -f ../../pilotlight/out/dcapp-planet-backfill.dylib
+rm -f ../../pilotlight/out/dcapp-planet-backfill_*.dylib
+rm -f ../../pilotlight/out/dcapp-planet-preprocess.dylib
+rm -f ../../pilotlight/out/dcapp-planet-preprocess_*.dylib
 rm -f ../../pilotlight/out/dcapp-planet-snapshot.dylib
 rm -f ../../pilotlight/out/dcapp-planet-snapshot_*.dylib
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ dc_draw_ext | debug ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -792,17 +838,17 @@ fi
 echo ${CYAN}Results: ${NC} ${PL_RESULT}
 echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
 
-#~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-backfill | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PL_RESULT=${BOLD}${GREEN}Successful.${NC}
 PL_DEFINES=""
-PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb -I/opt/homebrew/opt/gdal/include "
+PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb "
 PL_LINK_DIRECTORIES="-L../../pilotlight/out -Wl,-rpath,../../pilotlight/out -L$(brew --prefix)/lib -Wl,-rpath,$(brew --prefix)/lib "
 PL_COMPILER_FLAGS="-fmodules -ObjC -fPIC --debug -g "
-PL_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib -lgdal "
+PL_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib "
 PL_STATIC_LINK_LIBRARIES=""
 PL_DYNAMIC_LINK_LIBRARIES=""
-PL_SOURCES="../../apps/dcapp_planet_chunkgen.c ../../src/utils/file.c ../../src/utils/log.c "
+PL_SOURCES="../../apps/dcapp_planet_backfill.c ../../src/geo.c ../../src/utils/file.c ../../src/utils/log.c "
 PL_LINK_FRAMEWORKS="-framework Metal -framework MetalKit -framework Cocoa -framework IOKit -framework CoreVideo -framework QuartzCore "
 
 # add flags for specific hardware
@@ -814,10 +860,52 @@ fi
 
 # run compiler (and linker)
 echo
-echo ${YELLOW}Step: dcapp-planet-chunkgen${NC}
+echo ${YELLOW}Step: dcapp-planet-backfill${NC}
 echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
 echo ${CYAN}Compiling and Linking...${NC}
-clang -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINK_FRAMEWORKS $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-chunkgen.dylib"
+clang -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINK_FRAMEWORKS $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-backfill.dylib"
+
+# check build status
+if [ $? -ne 0 ]
+then
+    PL_RESULT=${BOLD}${RED}Failed.${NC}
+    PL_BUILD_STATUS=1
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+popd >/dev/null
+exit 1
+fi
+
+# print results
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-preprocess | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PL_RESULT=${BOLD}${GREEN}Successful.${NC}
+PL_DEFINES=""
+PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb -I/opt/homebrew/opt/gdal/include "
+PL_LINK_DIRECTORIES="-L../../pilotlight/out -Wl,-rpath,../../pilotlight/out -L$(brew --prefix)/lib -Wl,-rpath,$(brew --prefix)/lib "
+PL_COMPILER_FLAGS="-fmodules -ObjC -fPIC --debug -g "
+PL_LINKER_FLAGS="-Wl,-rpath,/usr/local/lib -lgdal "
+PL_STATIC_LINK_LIBRARIES=""
+PL_DYNAMIC_LINK_LIBRARIES=""
+PL_SOURCES="../../apps/dcapp_planet_preprocess.c ../../src/utils/file.c ../../src/utils/log.c "
+PL_LINK_FRAMEWORKS="-framework Metal -framework MetalKit -framework Cocoa -framework IOKit -framework CoreVideo -framework QuartzCore "
+
+# add flags for specific hardware
+if [[ "$ARCH" == "arm64" ]]; then
+    PL_COMPILER_FLAGS+="-arch arm64 "
+else
+    PL_COMPILER_FLAGS+="-arch x86_64 "
+fi
+
+# run compiler (and linker)
+echo
+echo ${YELLOW}Step: dcapp-planet-preprocess${NC}
+echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
+echo ${CYAN}Compiling and Linking...${NC}
+clang -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINK_FRAMEWORKS $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-preprocess.dylib"
 
 # check build status
 if [ $? -ne 0 ]

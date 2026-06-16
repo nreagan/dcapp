@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
         -h|--help)
             ARGS+=("--snapshot-help")
             ;;
-        --planet-data|--vertex-shader|--fragment-shader)
+        --planet-data|--mesh|--vertex-shader|--fragment-shader)
             key="$1"
             shift
             ARGS+=("$key" "$(to_abs_existing "$1")")

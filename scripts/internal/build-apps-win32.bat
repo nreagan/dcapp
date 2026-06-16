@@ -71,8 +71,10 @@
 @if exist "../../pilotlight/out/dcapp-genheader_*.pdb" del "..\..\pilotlight\out\dcapp-genheader_*.pdb"
 @if exist "../../pilotlight/out/dcapp-validate.exe" del "..\..\pilotlight\out\dcapp-validate.exe"
 @if exist "../../pilotlight/out/dcapp-validate_*.pdb" del "..\..\pilotlight\out\dcapp-validate_*.pdb"
-@if exist "../../pilotlight/out/dcapp-planet-chunkgen.dll" del "..\..\pilotlight\out\dcapp-planet-chunkgen.dll"
-@if exist "../../pilotlight/out/dcapp-planet-chunkgen_*.pdb" del "..\..\pilotlight\out\dcapp-planet-chunkgen_*.pdb"
+@if exist "../../pilotlight/out/dcapp-planet-backfill.dll" del "..\..\pilotlight\out\dcapp-planet-backfill.dll"
+@if exist "../../pilotlight/out/dcapp-planet-backfill_*.pdb" del "..\..\pilotlight\out\dcapp-planet-backfill_*.pdb"
+@if exist "../../pilotlight/out/dcapp-planet-preprocess.dll" del "..\..\pilotlight\out\dcapp-planet-preprocess.dll"
+@if exist "../../pilotlight/out/dcapp-planet-preprocess_*.pdb" del "..\..\pilotlight\out\dcapp-planet-preprocess_*.pdb"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot.dll" del "..\..\pilotlight\out\dcapp-planet-snapshot.dll"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot_*.pdb" del "..\..\pilotlight\out\dcapp-planet-snapshot_*.pdb"
 
@@ -316,21 +318,20 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
-::~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | release ~~~~~~~~~~~~~~~~~~~~~~~~
+::~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-backfill | release ~~~~~~~~~~~~~~~~~~~~~~~~
 
 @set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
 @set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
 @set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
 @set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=gdal.lib
-@set PL_SOURCES="../../apps/dcapp_planet_chunkgen.c" "../../src/utils/file.c" "../../src/utils/log.c"
+@set PL_SOURCES="../../apps/dcapp_planet_backfill.c" "../../src/geo.c" "../../src/utils/file.c" "../../src/utils/log.c"
 
 :: run compiler (and linker)
 @echo.
-@echo [1m[93mStep: dcapp-planet-chunkgen[0m
+@echo [1m[93mStep: dcapp-planet-backfill[0m
 @echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
 @echo [1m[36mCompiling and Linking...[0m
-cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-chunkgen.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-chunkgen_%random%.pdb" %PL_LINK_DIRECTORIES% %PL_STATIC_LINK_LIBRARIES%
+cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-backfill.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-backfill_%random%.pdb" %PL_LINK_DIRECTORIES%
 
 :: check build status
 @set PL_BUILD_STATUS=%ERRORLEVEL%
@@ -346,7 +347,41 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 @echo [36mResult: [0m %PL_RESULT%
 @echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
 
-:Exit_dcapp-planet-chunkgen
+:Exit_dcapp-planet-backfill
+
+@del "..\..\pilotlight\out\*.obj"  > nul 2> nul
+
+::~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-preprocess | release ~~~~~~~~~~~~~~~~~~~~~~~~
+
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
+@set PL_STATIC_LINK_LIBRARIES=gdal.lib
+@set PL_SOURCES="../../apps/dcapp_planet_preprocess.c" "../../src/utils/file.c" "../../src/utils/log.c"
+
+:: run compiler (and linker)
+@echo.
+@echo [1m[93mStep: dcapp-planet-preprocess[0m
+@echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
+@echo [1m[36mCompiling and Linking...[0m
+cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-preprocess.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-preprocess_%random%.pdb" %PL_LINK_DIRECTORIES% %PL_STATIC_LINK_LIBRARIES%
+
+:: check build status
+@set PL_BUILD_STATUS=%ERRORLEVEL%
+
+:: failed
+@if %PL_BUILD_STATUS% NEQ 0 (
+    @echo [1m[91mCompilation Failed with error code[0m: %PL_BUILD_STATUS%
+    @set PL_RESULT=[1m[91mFailed.[0m
+    goto Cleanuprelease
+)
+
+:: print results
+@echo [36mResult: [0m %PL_RESULT%
+@echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
+
+:Exit_dcapp-planet-preprocess
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
@@ -423,8 +458,10 @@ goto ExitLabel
 @if exist "../../pilotlight/out/dcapp-genheader_*.pdb" del "..\..\pilotlight\out\dcapp-genheader_*.pdb"
 @if exist "../../pilotlight/out/dcapp-validate.exe" del "..\..\pilotlight\out\dcapp-validate.exe"
 @if exist "../../pilotlight/out/dcapp-validate_*.pdb" del "..\..\pilotlight\out\dcapp-validate_*.pdb"
-@if exist "../../pilotlight/out/dcapp-planet-chunkgen.dll" del "..\..\pilotlight\out\dcapp-planet-chunkgen.dll"
-@if exist "../../pilotlight/out/dcapp-planet-chunkgen_*.pdb" del "..\..\pilotlight\out\dcapp-planet-chunkgen_*.pdb"
+@if exist "../../pilotlight/out/dcapp-planet-backfill.dll" del "..\..\pilotlight\out\dcapp-planet-backfill.dll"
+@if exist "../../pilotlight/out/dcapp-planet-backfill_*.pdb" del "..\..\pilotlight\out\dcapp-planet-backfill_*.pdb"
+@if exist "../../pilotlight/out/dcapp-planet-preprocess.dll" del "..\..\pilotlight\out\dcapp-planet-preprocess.dll"
+@if exist "../../pilotlight/out/dcapp-planet-preprocess_*.pdb" del "..\..\pilotlight\out\dcapp-planet-preprocess_*.pdb"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot.dll" del "..\..\pilotlight\out\dcapp-planet-snapshot.dll"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot_*.pdb" del "..\..\pilotlight\out\dcapp-planet-snapshot_*.pdb"
 
@@ -668,21 +705,20 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
-::~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+::~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-backfill | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 @set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
 @set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
 @set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
 @set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=gdal.lib
-@set PL_SOURCES="../../apps/dcapp_planet_chunkgen.c" "../../src/utils/file.c" "../../src/utils/log.c"
+@set PL_SOURCES="../../apps/dcapp_planet_backfill.c" "../../src/geo.c" "../../src/utils/file.c" "../../src/utils/log.c"
 
 :: run compiler (and linker)
 @echo.
-@echo [1m[93mStep: dcapp-planet-chunkgen[0m
+@echo [1m[93mStep: dcapp-planet-backfill[0m
 @echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
 @echo [1m[36mCompiling and Linking...[0m
-cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-chunkgen.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-chunkgen_%random%.pdb" %PL_LINK_DIRECTORIES% %PL_STATIC_LINK_LIBRARIES%
+cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-backfill.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-backfill_%random%.pdb" %PL_LINK_DIRECTORIES%
 
 :: check build status
 @set PL_BUILD_STATUS=%ERRORLEVEL%
@@ -698,7 +734,41 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 @echo [36mResult: [0m %PL_RESULT%
 @echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
 
-:Exit_dcapp-planet-chunkgen
+:Exit_dcapp-planet-backfill
+
+@del "..\..\pilotlight\out\*.obj"  > nul 2> nul
+
+::~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-preprocess | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
+@set PL_STATIC_LINK_LIBRARIES=gdal.lib
+@set PL_SOURCES="../../apps/dcapp_planet_preprocess.c" "../../src/utils/file.c" "../../src/utils/log.c"
+
+:: run compiler (and linker)
+@echo.
+@echo [1m[93mStep: dcapp-planet-preprocess[0m
+@echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
+@echo [1m[36mCompiling and Linking...[0m
+cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-preprocess.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-preprocess_%random%.pdb" %PL_LINK_DIRECTORIES% %PL_STATIC_LINK_LIBRARIES%
+
+:: check build status
+@set PL_BUILD_STATUS=%ERRORLEVEL%
+
+:: failed
+@if %PL_BUILD_STATUS% NEQ 0 (
+    @echo [1m[91mCompilation Failed with error code[0m: %PL_BUILD_STATUS%
+    @set PL_RESULT=[1m[91mFailed.[0m
+    goto Cleanupdebug
+)
+
+:: print results
+@echo [36mResult: [0m %PL_RESULT%
+@echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
+
+:Exit_dcapp-planet-preprocess
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 

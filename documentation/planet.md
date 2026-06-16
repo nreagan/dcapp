@@ -35,14 +35,14 @@ scripts/download-planet-data.sh
 
 This downloads the DEM and writes generated chunks directly under `data/`.
 
-### The `dcapp-planet-chunkgen` Tool
+### The `dcapp-planet-preprocess` Tool
 
-The `dcapp-planet-chunkgen` command preprocesses a DEM into the chunked tile format that dcapp's planet renderer expects. It reads the raster with GDAL, slices it into square tiles, normalizes elevations to 16-bit PNGs, and then processes each tile into a `.chu` chunk file with a CDLOD quadtree mesh. Rectangular DEM extents are supported as rectangular grids of square tiles; partial edge tiles are padded to the full tile size before processing.
+The `dcapp-planet-preprocess` command preprocesses a DEM into the chunked tile format that dcapp's planet renderer expects. It reads the raster with GDAL, slices it into square tiles, normalizes elevations to 16-bit PNGs, and then processes each tile into a `.chu` chunk file with a CDLOD quadtree mesh. Rectangular DEM extents are supported as rectangular grids of square tiles; partial edge tiles are padded to the full tile size before processing.
 
 **Usage:**
 
 ```
-dcapp-planet-chunkgen <input_dem> <output_dir> [options]
+dcapp-planet-preprocess <input_dem> <output_dir> [options]
 ```
 
 **Options:**
@@ -60,10 +60,10 @@ dcapp-planet-chunkgen <input_dem> <output_dir> [options]
 | `--keep-tiles` | Off | Keep intermediate PNG tiles (not deleted after processing) |
 | `-h`, `--help` | | Show help |
 
-A convenience wrapper script is provided at `bin/dcapp-planet-chunkgen.sh`, which handles path resolution automatically:
+A convenience wrapper script is provided at `bin/dcapp-planet-preprocess.sh`, which handles path resolution automatically:
 
 ```bash
-bin/dcapp-planet-chunkgen.sh /path/to/LDEM_45S_100M.LBL /path/to/output_dir
+bin/dcapp-planet-preprocess.sh /path/to/LDEM_45S_100M.LBL /path/to/output_dir
 ```
 
 ### Output
@@ -76,6 +76,26 @@ The tool produces:
 The `.planet.json` file is what you reference from the `<PlanetData>` element in your XML.
 
 Chunk generation supports north- and south-polar stereographic/UPS-style DEMs with non-rotated, square-pixel geotransforms. The generated metadata stores latitude of origin, central meridian, scale factor, false easting, and false northing so the baked terrain and runtime texture placement use the same projected-meter convention. GDAL band scale metadata is applied to terrain heights. Rotated/skewed geotransforms, arbitrary CRS reprojection, and ellipsoid/geoid terrain baking are intentionally rejected or deferred.
+
+---
+
+## Backfill Utility
+
+`dcapp-planet-backfill` generates an optional reference spheroid mesh from an existing `.planet.json`. It reads the chunk metadata, derives the terrain footprint from the tile origins, and writes a `.dcpm` mesh with triangles omitted over that footprint.
+
+```bash
+bin/dcapp-planet-backfill.sh data/LDEM_45S_100M.planet.json
+```
+
+By default this writes `data/LDEM_45S_100M_reference.dcpm`. You can also choose the output path:
+
+```bash
+bin/dcapp-planet-backfill.sh \
+  data/LDEM_45S_100M.planet.json \
+  data/LDEM_45S_100M_reference.dcpm
+```
+
+The mesh is not loaded automatically. Add an explicit `<PlanetMesh>` child under the desired `<PlanetView>` when you want to draw it.
 
 ---
 
@@ -214,7 +234,7 @@ Specifies the preprocessed terrain data for a planet. Must be a child of `<Plane
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `File` | string | Yes | Path to the `.planet.json` metadata file produced by `dcapp-planet-chunkgen`. Resolved relative to the XML file's directory. |
+| `File` | string | Yes | Path to the `.planet.json` metadata file produced by `dcapp-planet-preprocess`. Resolved relative to the XML file's directory. |
 
 ### `<PlanetTexture>`
 
@@ -456,6 +476,24 @@ Draws an ellipse on the terrain surface at a geographic location.
 | `FillColor` | color | No | Fill color (RGBA) |
 | `LineColor` | color | No | Line color (RGBA) |
 | `LineWidth` | double/var | No | Line width in meters |
+
+### `<PlanetMesh>`
+
+Draws a precomputed mesh in the planet's native body-centered Cartesian frame. This is intended for generated meshes such as reference spheroids, cutout fills, field-of-view footprints, or other geometry that already belongs in planet coordinates.
+
+```xml
+<PlanetMesh File="assets/reference_fill.dcpm" FillColor="0.35 0.40 0.32 1"/>
+```
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `File` | string | Yes | Path to a binary `.dcpm` mesh file. Resolved relative to the XML file's directory. |
+| `FillColor` | color | No | Solid mesh color (RGBA). |
+| `Color` | color | No | Alias for `FillColor`. |
+
+The current `.dcpm` format is intentionally minimal: four-byte magic `DCPM`, `uint32` version `1`, `uint32` vertex count, `uint32` index count, `uint32` vertex stride, `uint32` flags, then packed vertices and 32-bit triangle indices. Each vertex is `position.xyz` followed by `normal.xyz`, all `float32`, in planet-centered Cartesian meters. `vertex_stride` must currently be 24 bytes and `index_count` must be a multiple of three.
+
+`dcapp-planet-backfill` can generate a reference spheroid `.dcpm` from a `.planet.json`. It is not rendered automatically; add an explicit `<PlanetMesh>` child under the desired `<PlanetView>` when you want to draw it.
 
 ### `<PlanetSphere>`
 
@@ -741,7 +779,7 @@ The sample provides sliders for latitude, longitude, elevation, and heading, alo
 ### Running the Sample
 
 ```bash
-# 1. Prepare the terrain data (downloads DEM, runs chunkgen)
+# 1. Prepare the terrain data (downloads DEM, runs preprocess)
 scripts/download-planet-data.sh
 
 # 2. Run the display

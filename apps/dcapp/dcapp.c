@@ -220,6 +220,12 @@ PL_EXPORT void pl_app_shutdown(_AppData *app_data) {
                 sbfree(node->planet_line.sb_points_static);
                 sbfree(node->planet_line.sb_points_dynamic);
                 break;
+            case NODE_TYPE_PLANET_MESH:
+                if (node->planet_mesh.mesh)
+                    _ext_planet->cleanup_mesh(node->planet_mesh.mesh);
+                if (node->planet_mesh.source)
+                    PL_FREE(node->planet_mesh.source);
+                break;
             case NODE_TYPE_PLANET_POLYGON:
                 sbfree(node->planet_polygon.sb_points_static);
                 sbfree(node->planet_polygon.sb_points_dynamic);

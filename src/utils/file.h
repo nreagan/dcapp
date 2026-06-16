@@ -21,6 +21,7 @@ int            dc_utils_get_directory(const char *path, char *out, size_t out_si
 int            dc_utils_create_directory(const char *path);
 unsigned char *dc_utils_load_binary_file(const char *path, size_t *out_size);
 char          *dc_utils_load_text_file(const char *path);
+bool           dc_utils_write_binary_file(const char *path, const void *data, size_t size);
 bool           dc_utils_file_exists(const char *path);
 
 #ifdef __cplusplus

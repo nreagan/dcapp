@@ -34,7 +34,7 @@ shift
 goto parse
 
 :help
-echo Usage: scripts\download-planet-data.bat [--force] [chunkgen options]
+echo Usage: scripts\download-planet-data.bat [--force] [preprocess options]
 echo.
 echo Downloads the LOLA LDEM_45S_100M lunar DEM and generates planet chunks.
 echo.
@@ -46,7 +46,7 @@ echo Options:
 echo   --force                Regenerate chunks even if the .planet.json exists
 echo   -h, --help             Show this help
 echo.
-echo Any other options are passed through to dcapp-planet-chunkgen.
+echo Any other options are passed through to dcapp-planet-preprocess.
 exit /b 0
 
 :parsed
@@ -73,15 +73,15 @@ if not exist "%LBL_FILE%" (
     echo LDEM_45S_100M.LBL already downloaded, skipping.
 )
 
-if "%FORCE%"=="1" goto run_chunkgen
-if not exist "%PLANET_JSON%" goto run_chunkgen
-echo LDEM_45S_100M.planet.json already exists, skipping chunkgen. Use --force to regenerate.
+if "%FORCE%"=="1" goto run_preprocess
+if not exist "%PLANET_JSON%" goto run_preprocess
+echo LDEM_45S_100M.planet.json already exists, skipping preprocess. Use --force to regenerate.
 goto done
 
-:run_chunkgen
+:run_preprocess
 echo.
-echo Running chunkgen...
-call "%DCAPP_HOME%\bin\dcapp-planet-chunkgen.bat" "%LBL_FILE%" "%CHUNK_DIR%" --radius 1737400%EXTRA_ARGS%
+echo Running preprocess...
+call "%DCAPP_HOME%\bin\dcapp-planet-preprocess.bat" "%LBL_FILE%" "%CHUNK_DIR%" --radius 1737400%EXTRA_ARGS%
 if errorlevel 1 exit /b 1
 
 :done

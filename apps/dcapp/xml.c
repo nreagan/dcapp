@@ -58,6 +58,7 @@ static _NodeIndex    _process_xml_node_planet_data(_AppData *app_data, xmlNodePt
 static _NodeIndex    _process_xml_node_planet_ellipse(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_geo_json(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_line(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
+static _NodeIndex    _process_xml_node_planet_mesh(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_polygon(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static _NodeIndex    _process_xml_node_planet_shader(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory);
 static void          _planet_shader_abs_to_vfs(const char *abs_path, char *vfs_out, size_t vfs_out_size);
@@ -334,6 +335,9 @@ _NodeIndex dc_app_process_xml_node(_AppData *app_data, xmlNodePtr xml_node, _Nod
 
         case DC_APP_ELEM_TYPE_PLANET_LINE:
             return _process_xml_node_planet_line(app_data, xml_node, parent_node_index, parent_elem_type, directory);
+
+        case DC_APP_ELEM_TYPE_PLANET_MESH:
+            return _process_xml_node_planet_mesh(app_data, xml_node, parent_node_index, parent_elem_type, directory);
 
         case DC_APP_ELEM_TYPE_PLANET_POLYGON:
             return _process_xml_node_planet_polygon(app_data, xml_node, parent_node_index, parent_elem_type, directory);
@@ -4153,6 +4157,50 @@ static _NodeIndex _process_xml_node_planet_line(_AppData *app_data, xmlNodePtr x
     _process_xml_node_children(app_data, xml_node, node_index, DC_APP_ELEM_TYPE_PLANET_LINE, directory);
 
     return node_index;
+}
+
+static _NodeIndex _process_xml_node_planet_mesh(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory) {
+
+    if (parent_elem_type != DC_APP_ELEM_TYPE_PLANET_VIEW) {
+        DC_LOG_ERROR("PlanetMesh", "PlanetMesh must be a child of PlanetView");
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    _Node dc_node  = {};
+    dc_node.type   = NODE_TYPE_PLANET_MESH;
+    dc_node.parent = parent_node_index;
+
+    _Node *parent = _get_node(app_data, parent_node_index);
+    dc_node.planet_mesh.planet_def_index = parent->planet_view.planet_def_index;
+
+    xmlChar *raw_filepath = xmlGetProp(xml_node, BAD_CAST "File");
+    if (!raw_filepath) {
+        DC_LOG_ERROR("PlanetMesh", "Missing 'File' attribute");
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    char cleaned_filepath[DC_VALUE_STRING_BUFFER_SIZE];
+    strncpy(cleaned_filepath, (const char *)raw_filepath, sizeof(cleaned_filepath) - 1);
+    cleaned_filepath[sizeof(cleaned_filepath) - 1] = '\0';
+    xmlFree(raw_filepath);
+
+    char abs_filepath[DC_VALUE_STRING_BUFFER_SIZE];
+    if (dc_utils_is_relative_path(cleaned_filepath))
+        dc_utils_join_paths(directory, cleaned_filepath, abs_filepath, sizeof(abs_filepath));
+    else
+        strncpy(abs_filepath, cleaned_filepath, sizeof(abs_filepath) - 1);
+    abs_filepath[sizeof(abs_filepath) - 1] = '\0';
+
+    size_t source_len = strlen(abs_filepath) + 1;
+    dc_node.planet_mesh.source = (char *)PL_ALLOC(source_len);
+    memcpy(dc_node.planet_mesh.source, abs_filepath, source_len);
+
+    dc_node.planet_mesh.config_flags = NODE_CONFIG_FLAG_NONE;
+    if (_load_color_from_string(app_data, xml_node, "FillColor", &(dc_node.planet_mesh.fill_color)) ||
+        _load_color_from_string(app_data, xml_node, "Color", &(dc_node.planet_mesh.fill_color)))
+        dc_node.planet_mesh.config_flags |= NODE_CONFIG_FLAG_FILL_ENABLED;
+
+    return _register_node(app_data, &dc_node);
 }
 
 static _NodeIndex _process_xml_node_planet_polygon(_AppData *app_data, xmlNodePtr xml_node, _NodeIndex parent_node_index, DcAppElemType parent_elem_type, const char *directory) {

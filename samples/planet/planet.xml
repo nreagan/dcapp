@@ -167,6 +167,7 @@
                 CameraYaw="@Heading"
                 CameraOrthographic="@UseOrtho" ShaderIndex="@LeftShader"
                 Tau="@Tau">
+                <PlanetMesh File="../../data/LDEM_45S_100M_reference.dcpm" FillColor="0.30 0.36 0.26 1.0"/>
                 <PlanetBreadcrumbs CRS="#_planet_crs_geodetic_" Latitude="@OrbitLat" Longitude="@OrbitLon"
                     HeightAboveTerrain="50000" PointSpacing="25000" MaxPoints="512"
                     LineColor="0.1 0.9 1.0 0.85" LineWidth="3500"/>

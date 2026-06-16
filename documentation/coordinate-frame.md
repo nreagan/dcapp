@@ -191,7 +191,7 @@ phi = asin(cos(c) * sin(phi0) + (y * sin(c) * cos(phi0)) / rho)
 lam = lam0 + atan2(x * sin(c), rho * cos(phi0) * cos(c) - y * sin(phi0) * sin(c))
 ```
 
-New `dcapp-planet-chunkgen` output stores each tile center directly as projected `originX`/`originY` meters in `.planet.json`. dcapp still accepts older `.planet.json` files with tile `lat`/`lon` and converts them with the forward projection above.
+New `dcapp-planet-preprocess` output stores each tile center directly as projected `originX`/`originY` meters in `.planet.json`. dcapp still accepts older `.planet.json` files with tile `lat`/`lon` and converts them with the forward projection above.
 
 ### Texture Placement Convention
 
@@ -203,7 +203,7 @@ When placing textures from XML, dcapp converts user-facing `Latitude`/`Longitude
 |------|-----------------|
 | `extensions/pl_planet_ext.c` | Texture placement against projected tile origins |
 | `extensions/pl_planet_processor_ext.c` | Converts projected heightmap points to Cartesian terrain vertices |
-| `apps/dcapp_planet_chunkgen.c` | Writes projected tile origins to `.planet.json` |
+| `apps/dcapp_planet_preprocess.c` | Writes projected tile origins to `.planet.json` |
 | `apps/dcapp/dcapp.c` | Converts XML texture coordinates and legacy JSON tile `lat`/`lon` to projected origins |
 
 ---

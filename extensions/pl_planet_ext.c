@@ -44,6 +44,7 @@ Index:
 #include <stdio.h>
 #include <float.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include "pl.h"
 #include "pl_planet_ext.h"
 
@@ -166,6 +167,33 @@ typedef struct _plChunkFileData
     uint32_t          uTextureIndex;
 } plChunkFileData;
 
+typedef struct _plPlanetMeshVertex
+{
+    plVec3 tPosition;
+    plVec3 tNormal;
+} plPlanetMeshVertex;
+
+typedef struct _plPlanetMesh
+{
+    plBufferHandle tVertexBuffer;
+    plBufferHandle tIndexBuffer;
+    uint32_t       uVertexCount;
+    uint32_t       uIndexCount;
+} plPlanetMesh;
+
+typedef struct _plPlanetMeshDraw
+{
+    plPlanetMesh* ptMesh;
+    uint32_t      uColor;
+} plPlanetMeshDraw;
+
+typedef struct _plGpuDynPlanetMeshData
+{
+    plMat4 tMVP;
+    plVec4 tColor;
+    plVec4 tLightDirection;
+} plGpuDynPlanetMeshData;
+
 typedef struct _plPlanet
 {
     plPlanetRuntimeOptions tRuntimeOptions;
@@ -209,8 +237,10 @@ typedef struct _plPlanetView
     plShaderHandle tWireframeShader;
     plShaderHandle tShaderDouble;
     plShaderHandle tWireframeShaderDouble;
+    plShaderHandle tMeshShader;
     const char* pcVertexShader;
     const char* pcFragmentShader;
+    plPlanetMeshDraw* sbtMeshDraws;
 } plPlanetView;
 
 typedef struct _plPlanetContext
@@ -258,6 +288,7 @@ static void pl__touch_chunk(plPlanet*, plPlanetChunk*);
 static void pl__make_unresident  (plPlanet*, plPlanetChunk*);
 static bool pl__planet_load(plPlanet* ptPlanet, plPlanetProcessInfo* ptInfo, plPlanetLoadFlags tFlags);
 void pl__remove_from_replacement_queue(plPlanet* ptPlanet, plPlanetChunk* ptChunk);
+static void pl__render_mesh_draws(plPlanetView* ptView, plRenderEncoder* ptEncoder, const plMat4* ptMVP);
 
 static void pl__render_chunk(plPlanetView*, plCamera*, plRenderEncoder*, plPlanetChunk*, plPlanetChunkFile*, const plMat4* ptMVP);
 static bool pl__sat_visibility_test(plCamera*, const plAABB*);
@@ -682,6 +713,7 @@ pl_cleanup_planet_view(plPlanetView* ptView)
     gptGfx->destroy_render_pass(ptDevice, ptView->tRenderPass);
     gptGfx->destroy_texture(ptDevice, ptView->tOutputTexture);
     gptGfx->destroy_texture(ptDevice, ptView->tOutputTextureDepth);
+    pl_sb_free(ptView->sbtMeshDraws);
     PL_FREE(ptView);
 }
 
@@ -725,6 +757,16 @@ pl_render_to_planet_view(plPlanetView* ptView, plCamera* ptCamera, plCommandBuff
             0, NULL
         );
 
+    pl__render_mesh_draws(ptView, ptEncoder, &tMVP);
+    gptGfx->bind_shader(ptEncoder, tShader);
+    gptGfx->bind_vertex_buffer(ptEncoder, ptView->ptPlanet->tVertexBuffer);
+    gptGfx->bind_graphics_bind_groups(
+        ptEncoder,
+        tShader,
+        0, 1,
+        &gptCtx->atBindGroups[gptGfx->get_current_frame_index()],
+        0, NULL
+    );
     for(uint32_t i = 0; i < pl_sb_size(ptView->ptPlanet->sbtChunkFiles); i++)
         pl__render_chunk(ptView, ptCamera, ptEncoder, &ptView->ptPlanet->sbtChunkFiles[i].tFile.atChunks[0], &ptView->ptPlanet->sbtChunkFiles[i].tFile, &tMVP);
 
@@ -1117,6 +1159,7 @@ pl_planet_load_shaders(plPlanetView* ptPlanet)
         gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tWireframeShader);
         gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tShaderDouble);
         gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tWireframeShaderDouble);
+        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tMeshShader);
     }
 
     plShaderDesc tShaderDesc = {
@@ -1240,6 +1283,46 @@ pl_planet_load_shaders(plPlanetView* ptPlanet)
     ptPlanet->tWireframeShaderDouble = gptGfx->create_shader(ptDevice, &tShaderDoubleDesc);
 
     gptShader->set_options(&tOriginalOptions);
+
+    const plShaderDesc tMeshShaderDesc = {
+        .tVertexShader    = gptShader->load_glsl("planet_mesh.vert", "main", NULL, NULL),
+        .tFragmentShader  = gptShader->load_glsl("planet_mesh.frag", "main", NULL, NULL),
+        .tGraphicsState = {
+            .ulDepthWriteEnabled  = 1,
+            .ulDepthMode          = PL_COMPARE_MODE_GREATER_OR_EQUAL,
+            .ulCullMode           = PL_CULL_MODE_CULL_BACK,
+            .ulWireframe          = 0,
+            .ulStencilMode        = PL_COMPARE_MODE_ALWAYS,
+            .ulStencilRef         = 0xff,
+            .ulStencilMask        = 0xff,
+            .ulStencilOpFail      = PL_STENCIL_OP_KEEP,
+            .ulStencilOpDepthFail = PL_STENCIL_OP_KEEP,
+            .ulStencilOpPass      = PL_STENCIL_OP_KEEP
+        },
+        .atVertexBufferLayouts = {
+            {
+                .uByteStride = sizeof(plPlanetMeshVertex),
+                .atAttributes = {
+                    {.uByteOffset = offsetof(plPlanetMeshVertex, tPosition), .tFormat = PL_VERTEX_FORMAT_FLOAT3},
+                    {.uByteOffset = offsetof(plPlanetMeshVertex, tNormal),   .tFormat = PL_VERTEX_FORMAT_FLOAT3},
+                }
+            }
+        },
+        .atBlendStates = {
+            {
+                .bBlendEnabled   = true,
+                .uColorWriteMask = PL_COLOR_WRITE_MASK_ALL,
+                .tSrcColorFactor = PL_BLEND_FACTOR_SRC_ALPHA,
+                .tDstColorFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .tColorOp        = PL_BLEND_OP_ADD,
+                .tSrcAlphaFactor = PL_BLEND_FACTOR_SRC_ALPHA,
+                .tDstAlphaFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .tAlphaOp        = PL_BLEND_OP_ADD
+            }
+        },
+        .tRenderPassLayout = gptCtx->tRenderPassLayout,
+    };
+    ptPlanet->tMeshShader = gptGfx->create_shader(ptDevice, &tMeshShaderDesc);
 }
 
 static void
@@ -1248,6 +1331,181 @@ pl_planet_set_shaders(plPlanetView* ptPlanet, const char* pcVertexShader, const 
     ptPlanet->pcVertexShader   = pcVertexShader   ? pcVertexShader   : "planet.vert";
     ptPlanet->pcFragmentShader = pcFragmentShader ? pcFragmentShader : "planet.frag";
     pl_planet_load_shaders(ptPlanet);
+}
+
+plPlanetMesh*
+pl_planet_load_mesh(plCommandBuffer* ptCmdBuffer, const char* pcPath)
+{
+    if(!ptCmdBuffer || !pcPath || pcPath[0] == '\0')
+        return NULL;
+
+    FILE* ptFile = fopen(pcPath, "rb");
+    if(!ptFile)
+    {
+        fprintf(stderr, "PlanetMesh: failed to open '%s'\n", pcPath);
+        return NULL;
+    }
+
+    char acMagic[4] = {0};
+    uint32_t uVersion = 0;
+    uint32_t uVertexCount = 0;
+    uint32_t uIndexCount = 0;
+    uint32_t uVertexStride = 0;
+    uint32_t uFlags = 0;
+
+    bool bOk = fread(acMagic, 1, sizeof(acMagic), ptFile) == sizeof(acMagic) &&
+               fread(&uVersion, sizeof(uVersion), 1, ptFile) == 1 &&
+               fread(&uVertexCount, sizeof(uVertexCount), 1, ptFile) == 1 &&
+               fread(&uIndexCount, sizeof(uIndexCount), 1, ptFile) == 1 &&
+               fread(&uVertexStride, sizeof(uVertexStride), 1, ptFile) == 1 &&
+               fread(&uFlags, sizeof(uFlags), 1, ptFile) == 1;
+
+    (void)uFlags;
+    if(!bOk || memcmp(acMagic, "DCPM", 4) != 0 || uVersion != 1 ||
+       uVertexCount == 0 || uIndexCount == 0 || (uIndexCount % 3) != 0 ||
+       uVertexStride != sizeof(plPlanetMeshVertex))
+    {
+        fprintf(stderr, "PlanetMesh: invalid DCPM v1 mesh '%s'\n", pcPath);
+        fclose(ptFile);
+        return NULL;
+    }
+
+    const size_t szVertexBytes = (size_t)uVertexCount * sizeof(plPlanetMeshVertex);
+    const size_t szIndexBytes = (size_t)uIndexCount * sizeof(uint32_t);
+    const size_t szUploadBytes = szVertexBytes + szIndexBytes;
+    if(szVertexBytes / sizeof(plPlanetMeshVertex) != (size_t)uVertexCount ||
+       szIndexBytes / sizeof(uint32_t) != (size_t)uIndexCount ||
+       szUploadBytes < szVertexBytes)
+    {
+        fprintf(stderr, "PlanetMesh: mesh is too large '%s'\n", pcPath);
+        fclose(ptFile);
+        return NULL;
+    }
+
+    plPlanetMeshVertex* atVertices = PL_ALLOC(szVertexBytes);
+    uint32_t* auIndices = PL_ALLOC(szIndexBytes);
+    if(!atVertices || !auIndices)
+    {
+        if(atVertices) PL_FREE(atVertices);
+        if(auIndices) PL_FREE(auIndices);
+        fclose(ptFile);
+        return NULL;
+    }
+
+    bOk = fread(atVertices, 1, szVertexBytes, ptFile) == szVertexBytes &&
+          fread(auIndices, 1, szIndexBytes, ptFile) == szIndexBytes;
+    fclose(ptFile);
+    if(!bOk)
+    {
+        fprintf(stderr, "PlanetMesh: truncated mesh '%s'\n", pcPath);
+        PL_FREE(atVertices);
+        PL_FREE(auIndices);
+        return NULL;
+    }
+
+    for(uint32_t i = 0; i < uIndexCount; i++)
+    {
+        if(auIndices[i] >= uVertexCount)
+        {
+            fprintf(stderr, "PlanetMesh: index out of range in '%s'\n", pcPath);
+            PL_FREE(atVertices);
+            PL_FREE(auIndices);
+            return NULL;
+        }
+    }
+
+    plDevice* ptDevice = gptCtx->ptDevice;
+    plPlanetMesh* ptMesh = PL_ALLOC(sizeof(plPlanetMesh));
+    if(!ptMesh)
+    {
+        PL_FREE(atVertices);
+        PL_FREE(auIndices);
+        return NULL;
+    }
+    memset(ptMesh, 0, sizeof(*ptMesh));
+    ptMesh->uVertexCount = uVertexCount;
+    ptMesh->uIndexCount = uIndexCount;
+
+    const plBufferDesc tVertexBufferDesc = {
+        .tUsage      = PL_BUFFER_USAGE_VERTEX | PL_BUFFER_USAGE_TRANSFER_DESTINATION,
+        .szByteSize  = szVertexBytes,
+        .pcDebugName = "planet mesh vertex buffer"
+    };
+    const plBufferDesc tIndexBufferDesc = {
+        .tUsage      = PL_BUFFER_USAGE_INDEX | PL_BUFFER_USAGE_TRANSFER_DESTINATION,
+        .szByteSize  = szIndexBytes,
+        .pcDebugName = "planet mesh index buffer"
+    };
+    ptMesh->tVertexBuffer = gptGfx->create_buffer(ptDevice, &tVertexBufferDesc, NULL);
+    ptMesh->tIndexBuffer = gptGfx->create_buffer(ptDevice, &tIndexBufferDesc, NULL);
+
+    plBuffer* ptVertexBuffer = gptGfx->get_buffer(ptDevice, ptMesh->tVertexBuffer);
+    plBuffer* ptIndexBuffer = gptGfx->get_buffer(ptDevice, ptMesh->tIndexBuffer);
+
+    const plDeviceMemoryAllocation tVertexAllocation = gptGfx->allocate_memory(ptDevice,
+        ptVertexBuffer->tMemoryRequirements.ulSize,
+        PL_MEMORY_FLAGS_DEVICE_LOCAL,
+        ptVertexBuffer->tMemoryRequirements.uMemoryTypeBits,
+        "planet mesh vertex memory");
+    const plDeviceMemoryAllocation tIndexAllocation = gptGfx->allocate_memory(ptDevice,
+        ptIndexBuffer->tMemoryRequirements.ulSize,
+        PL_MEMORY_FLAGS_DEVICE_LOCAL,
+        ptIndexBuffer->tMemoryRequirements.uMemoryTypeBits,
+        "planet mesh index memory");
+    gptGfx->bind_buffer_to_memory(ptDevice, ptMesh->tVertexBuffer, &tVertexAllocation);
+    gptGfx->bind_buffer_to_memory(ptDevice, ptMesh->tIndexBuffer, &tIndexAllocation);
+
+    const plBufferDesc tStagingBufferDesc = {
+        .tUsage      = PL_BUFFER_USAGE_TRANSFER_SOURCE,
+        .szByteSize  = szUploadBytes,
+        .pcDebugName = "planet mesh staging buffer"
+    };
+    plBuffer* ptStagingBuffer = NULL;
+    plBufferHandle tStagingBuffer = gptGfx->create_buffer(ptDevice, &tStagingBufferDesc, &ptStagingBuffer);
+    const plDeviceMemoryAllocation tStagingAllocation = gptGfx->allocate_memory(ptDevice,
+        ptStagingBuffer->tMemoryRequirements.ulSize,
+        PL_MEMORY_FLAGS_HOST_VISIBLE | PL_MEMORY_FLAGS_HOST_COHERENT,
+        ptStagingBuffer->tMemoryRequirements.uMemoryTypeBits,
+        "planet mesh staging memory");
+    gptGfx->bind_buffer_to_memory(ptDevice, tStagingBuffer, &tStagingAllocation);
+
+    uint8_t* puStagingData = (uint8_t*)ptStagingBuffer->tMemoryAllocation.pHostMapped;
+    memcpy(puStagingData, atVertices, szVertexBytes);
+    memcpy(puStagingData + szVertexBytes, auIndices, szIndexBytes);
+
+    plBlitEncoder* ptBlitEncoder = gptGfx->begin_blit_pass(ptCmdBuffer);
+    gptGfx->copy_buffer(ptBlitEncoder, tStagingBuffer, ptMesh->tVertexBuffer, 0, 0, szVertexBytes);
+    gptGfx->copy_buffer(ptBlitEncoder, tStagingBuffer, ptMesh->tIndexBuffer, szVertexBytes, 0, szIndexBytes);
+    gptGfx->end_blit_pass(ptBlitEncoder);
+    gptGfx->queue_buffer_for_deletion(ptDevice, tStagingBuffer);
+
+    PL_FREE(atVertices);
+    PL_FREE(auIndices);
+    return ptMesh;
+}
+
+void
+pl_planet_cleanup_mesh(plPlanetMesh* ptMesh)
+{
+    if(!ptMesh)
+        return;
+    plDevice* ptDevice = gptCtx->ptDevice;
+    if(gptGfx->is_buffer_valid(ptDevice, ptMesh->tVertexBuffer))
+        gptGfx->destroy_buffer(ptDevice, ptMesh->tVertexBuffer);
+    if(gptGfx->is_buffer_valid(ptDevice, ptMesh->tIndexBuffer))
+        gptGfx->destroy_buffer(ptDevice, ptMesh->tIndexBuffer);
+    PL_FREE(ptMesh);
+}
+
+void
+pl_draw_mesh(plPlanetView* ptView, plPlanetMesh* ptMesh, uint32_t uColor)
+{
+    if(!ptView || !ptMesh || ptMesh->uIndexCount == 0)
+        return;
+    pl_sb_push(ptView->sbtMeshDraws, ((plPlanetMeshDraw){
+        .ptMesh = ptMesh,
+        .uColor = uColor
+    }));
 }
 
 void
@@ -2042,6 +2300,62 @@ pl__render_chunk(plPlanetView* ptPlanetView, plCamera* ptCamera , plRenderEncode
     }
 }
 
+static void
+pl__render_mesh_draws(plPlanetView* ptView, plRenderEncoder* ptEncoder, const plMat4* ptMVP)
+{
+    if(!ptView || pl_sb_size(ptView->sbtMeshDraws) == 0)
+        return;
+
+    plDevice* ptDevice = gptCtx->ptDevice;
+    gptGfx->bind_shader(ptEncoder, ptView->tMeshShader);
+
+    for(uint32_t i = 0; i < pl_sb_size(ptView->sbtMeshDraws); i++)
+    {
+        plPlanetMeshDraw* ptDraw = &ptView->sbtMeshDraws[i];
+        plPlanetMesh* ptMesh = ptDraw->ptMesh;
+        if(!ptMesh || ptMesh->uIndexCount == 0)
+            continue;
+
+        plDynamicBinding tDynamicBinding =
+            pl_allocate_dynamic_data(gptGfx, ptDevice, &gptCtx->tCurrentDynamicBufferBlock);
+        plGpuDynPlanetMeshData* ptDynamic = (plGpuDynPlanetMeshData*)tDynamicBinding.pcData;
+        ptDynamic->tMVP = *ptMVP;
+        ptDynamic->tColor = (plVec4){
+            (float)((ptDraw->uColor >> 0) & 0xff) / 255.0f,
+            (float)((ptDraw->uColor >> 8) & 0xff) / 255.0f,
+            (float)((ptDraw->uColor >> 16) & 0xff) / 255.0f,
+            (float)((ptDraw->uColor >> 24) & 0xff) / 255.0f
+        };
+        ptDynamic->tLightDirection = (plVec4){
+            ptView->ptPlanet->tRuntimeOptions.tLightDirection.x,
+            ptView->ptPlanet->tRuntimeOptions.tLightDirection.y,
+            ptView->ptPlanet->tRuntimeOptions.tLightDirection.z,
+            0.0f
+        };
+
+        gptGfx->bind_vertex_buffer(ptEncoder, ptMesh->tVertexBuffer);
+        gptGfx->bind_graphics_bind_groups(
+            ptEncoder,
+            ptView->tMeshShader,
+            0, 0,
+            NULL,
+            1, &tDynamicBinding
+        );
+
+        const plDrawIndex tDraw = {
+            .uInstanceCount = 1,
+            .uIndexCount    = ptMesh->uIndexCount,
+            .uVertexStart   = 0,
+            .uIndexStart    = 0,
+            .tIndexBuffer   = ptMesh->tIndexBuffer
+        };
+        gptGfx->draw_indexed(ptEncoder, 1, &tDraw);
+        *gptCtx->pdDrawCalls += 1;
+    }
+
+    pl_sb_reset(ptView->sbtMeshDraws);
+}
+
 static bool
 pl__sat_visibility_test(plCamera* ptCamera, const plAABB* ptAABB)
 {
@@ -2493,6 +2807,8 @@ pl_load_ext(plApiRegistryI* ptApiRegistry, bool bReload)
         .cleanup                  = pl_planet_cleanup,
         .create_planet            = pl_create_planet,
         .cleanup_planet           = pl_cleanup_planet,
+        .load_mesh                = pl_planet_load_mesh,
+        .cleanup_mesh             = pl_planet_cleanup_mesh,
         .prepare                  = pl_prepare_planet,
         .get_stream_stats         = pl_planet_get_stream_stats,
         .reload_shaders           = pl_planet_load_shaders,
@@ -2505,6 +2821,7 @@ pl_load_ext(plApiRegistryI* ptApiRegistry, bool bReload)
         .draw_polygon             = pl_draw_polygon,
         .draw_polygon_filled      = pl_draw_polygon_filled,
         .draw_line                = pl_draw_line,
+        .draw_mesh                = pl_draw_mesh,
         .draw_text                = pl_draw_text,
         .set_texture              = pl_planet_set_texture,
         .create_view              = pl_create_planet_view,

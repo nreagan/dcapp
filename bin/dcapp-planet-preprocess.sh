@@ -5,7 +5,23 @@ DCAPP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$DCAPP_HOME/pilotlight/out"
 
 if [ $# -lt 2 ]; then
-    exec "$RUN_DIR/pilot_light" -a dcapp-planet-chunkgen --help
+    echo "Usage: dcapp-planet-preprocess <input_dem> <output_dir> [options]"
+    echo
+    echo "Options:"
+    echo "  --radius N"
+    echo "  --tile-size N"
+    echo "  --min-height N"
+    echo "  --max-height N"
+    echo "  --meters-per-pixel N"
+    echo "  --tree-depth N"
+    echo "  --max-base-error N"
+    echo "  --prefix NAME"
+    echo "  --keep-tiles"
+    echo "  -h, --help"
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+        exit 0
+    fi
+    exit 1
 fi
 
 INPUT="$1"
@@ -42,6 +58,6 @@ INPUT_REL="$(get_relative_path "$RUN_DIR" "$INPUT_ABS")"
 OUTPUT_REL="$(get_relative_path "$RUN_DIR" "$OUTPUT_ABS")"
 
 cd "$RUN_DIR"
-cmd="./pilot_light -a dcapp-planet-chunkgen $INPUT_REL $OUTPUT_REL $*"
+cmd="./pilot_light -a dcapp-planet-preprocess $INPUT_REL $OUTPUT_REL $*"
 echo "$cmd"
 exec $cmd

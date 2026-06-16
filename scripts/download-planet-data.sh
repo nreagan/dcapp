@@ -19,7 +19,7 @@ EXTRA_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
-            echo "Usage: scripts/download-planet-data.sh [--force] [chunkgen options]"
+            echo "Usage: scripts/download-planet-data.sh [--force] [preprocess options]"
             echo ""
             echo "Downloads the LOLA LDEM_45S_100M lunar DEM and generates planet chunks."
             echo ""
@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
             echo "  --force                Regenerate chunks even if the .planet.json exists"
             echo "  -h, --help             Show this help"
             echo ""
-            echo "Any other options are passed through to dcapp-planet-chunkgen."
+            echo "Any other options are passed through to dcapp-planet-preprocess."
             exit 0
             ;;
         --force)
@@ -67,14 +67,14 @@ fi
 
 if [ "$FORCE" = true ] || [ ! -f "$PLANET_JSON" ]; then
     echo ""
-    echo "Running chunkgen..."
+    echo "Running preprocess..."
     if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
-        "$DCAPP_HOME/bin/dcapp-planet-chunkgen.sh" "$LBL_FILE" "$CHUNK_DIR" --radius 1737400 "${EXTRA_ARGS[@]}"
+        "$DCAPP_HOME/bin/dcapp-planet-preprocess.sh" "$LBL_FILE" "$CHUNK_DIR" --radius 1737400 "${EXTRA_ARGS[@]}"
     else
-        "$DCAPP_HOME/bin/dcapp-planet-chunkgen.sh" "$LBL_FILE" "$CHUNK_DIR" --radius 1737400
+        "$DCAPP_HOME/bin/dcapp-planet-preprocess.sh" "$LBL_FILE" "$CHUNK_DIR" --radius 1737400
     fi
 else
-    echo "LDEM_45S_100M.planet.json already exists, skipping chunkgen. Use --force to regenerate."
+    echo "LDEM_45S_100M.planet.json already exists, skipping preprocess. Use --force to regenerate."
 fi
 
 echo ""

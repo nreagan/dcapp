@@ -573,6 +573,7 @@ bool _is_valid_child(DcAppElemType parent_type, DcAppElemType child_type) {
             case DC_APP_ELEM_TYPE_PLANET_ELLIPSE:
             case DC_APP_ELEM_TYPE_PLANET_GEO_JSON:
             case DC_APP_ELEM_TYPE_PLANET_LINE:
+            case DC_APP_ELEM_TYPE_PLANET_MESH:
             case DC_APP_ELEM_TYPE_PLANET_POLYGON:
             case DC_APP_ELEM_TYPE_PLANET_SPHERE:
             case DC_APP_ELEM_TYPE_PLANET_TEXT:
@@ -1074,6 +1075,17 @@ void _validate_required_attributes(ValidationContext *ctx, xmlNodePtr node, DcAp
             break;
         }
 
+        case DC_APP_ELEM_TYPE_PLANET_MESH: {
+            xmlChar *file = xmlGetProp(node, BAD_CAST "File");
+            if (!file) {
+                DC_LOG_ERROR("Validate", "<PlanetMesh> missing required attribute 'File' (line %ld)", xmlGetLineNo(node));
+                ctx->error_count++;
+            } else {
+                xmlFree(file);
+            }
+            break;
+        }
+
         case DC_APP_ELEM_TYPE_PLANET_TEXTURE:
             // All attributes are optional (dynamic, can be set via variables at runtime)
             break;
@@ -1142,6 +1154,7 @@ static const char *_valid_attrs_planet_shader[]  = {"Index", "VertexShader", "Fr
 static const char *_valid_attrs_planet_overlay[] = {"Planet", "CRS", "HeightAboveTerrain", "Latitude", "Longitude", "X", "Y", "Z", "Radius", "RadiusX", "RadiusY", "Rotation", "Segments", "Size", NULL};
 static const char *_valid_attrs_planet_breadcrumbs[] = {"Altitude", "PointSpacing", "MaxPoints", "Clear", "Enabled", NULL};
 static const char *_valid_attrs_planet_geojson[] = {"File", "Planet", "CRS", "HeightAboveTerrain", NULL};
+static const char *_valid_attrs_planet_mesh[]    = {"File", "Color", "FillColor", NULL};
 static const char *_valid_attrs_planet_vertex[]  = {"Latitude", "Longitude", "Altitude", "X", "Y", "Z", NULL};
 static const char *_valid_attrs_rounded[]        = {"Rounded", NULL};
 static const char *_valid_attrs_text[]           = {"Size", "ShadowOffset", "UpdateRate", "Font", "Color", NULL};
@@ -1375,6 +1388,9 @@ static bool _is_valid_attr_for_elem(const char *attr_name, DcAppElemType elem_ty
             return _attr_in_list(attr_name, _valid_attrs_planet_geojson) ||
                    _attr_in_list(attr_name, _valid_attrs_color) ||
                    _attr_in_list(attr_name, _valid_attrs_line);
+
+        case DC_APP_ELEM_TYPE_PLANET_MESH:
+            return _attr_in_list(attr_name, _valid_attrs_planet_mesh);
 
         case DC_APP_ELEM_TYPE_TEXT:
             return _attr_in_list(attr_name, _valid_attrs_position) ||

@@ -1422,6 +1422,11 @@ void dc_app_draw_planet_line(plPlanetView *view, plVec3 *points, uint32_t point_
     _ext_planet->draw_line(view, points, point_count, line_width, color);
 }
 
+void dc_app_draw_planet_mesh(plPlanetView *view, plPlanetMesh *mesh, uint32_t color) {
+    if (!view || !mesh) return;
+    _ext_planet->draw_mesh(view, mesh, color);
+}
+
 void dc_app_draw_planet_sphere(plPlanetView *view, float lon, float lat, float height, float radius, uint32_t color) {
     if (!view || radius <= 0.0f) return;
     _ext_planet->draw_sphere(view, lon, lat, height, radius, color);

@@ -114,6 +114,8 @@ const char *dc_app_elem_type_to_string(DcAppElemType type) {
             return "PlanetGeoJSON";
         case DC_APP_ELEM_TYPE_PLANET_LINE:
             return "PlanetLine";
+        case DC_APP_ELEM_TYPE_PLANET_MESH:
+            return "PlanetMesh";
         case DC_APP_ELEM_TYPE_PLANET_POLYGON:
             return "PlanetPolygon";
         case DC_APP_ELEM_TYPE_PLANET_SHADER:
@@ -255,6 +257,8 @@ DcAppElemType dc_app_string_to_elem_type(const char *name) {
         return DC_APP_ELEM_TYPE_PLANET_GEO_JSON;
     if (strcmp(name, "PlanetLine") == 0)
         return DC_APP_ELEM_TYPE_PLANET_LINE;
+    if (strcmp(name, "PlanetMesh") == 0)
+        return DC_APP_ELEM_TYPE_PLANET_MESH;
     if (strcmp(name, "PlanetPolygon") == 0)
         return DC_APP_ELEM_TYPE_PLANET_POLYGON;
     if (strcmp(name, "PlanetShader") == 0)

@@ -83,6 +83,7 @@ typedef enum __NodeType {
     NODE_TYPE_PLANET_BREADCRUMBS,
     NODE_TYPE_PLANET_ELLIPSE,
     NODE_TYPE_PLANET_LINE,
+    NODE_TYPE_PLANET_MESH,
     NODE_TYPE_PLANET_POLYGON,
     NODE_TYPE_PLANET_SPHERE,
     NODE_TYPE_PLANET_TEXT,
@@ -655,6 +656,15 @@ typedef struct __NodePlanetSphere {
     DcAppPlanetCrs crs;
 } _NodePlanetSphere;
 
+typedef struct __NodePlanetMesh {
+    char         *source;
+    plPlanetMesh *mesh;
+    _ValIndex4   fill_color;
+    uint8_t      config_flags;
+    uint8_t      planet_def_index;
+    bool         load_failed;
+} _NodePlanetMesh;
+
 typedef struct __NodePlanetText {
     _ValIndex  lat;
     _ValIndex  lon;
@@ -756,6 +766,7 @@ typedef struct __Node {
         _NodePlanetBreadcrumbs planet_breadcrumbs;
         _NodePlanetEllipse planet_ellipse;
         _NodePlanetLine    planet_line;
+        _NodePlanetMesh    planet_mesh;
         _NodePlanetPolygon planet_polygon;
         _NodePlanetSphere  planet_sphere;
         _NodePlanetText    planet_text;

@@ -130,6 +130,7 @@ void   dc_app_draw_3d_sphere_filled(_AppData *app_data, plSphere sphere, uint32_
 void   dc_app_draw_planet_polygon_filled(plPlanetView *view, plVec3 *points, uint32_t point_count, uint32_t color);
 void   dc_app_draw_planet_polygon(plPlanetView *view, plVec3 *points, uint32_t point_count, float line_width, uint32_t color);
 void   dc_app_draw_planet_line(plPlanetView *view, plVec3 *points, uint32_t point_count, float line_width, uint32_t color);
+void   dc_app_draw_planet_mesh(plPlanetView *view, plPlanetMesh *mesh, uint32_t color);
 void   dc_app_draw_planet_sphere(plPlanetView *view, float lon, float lat, float height, float radius, uint32_t color);
 void   dc_app_draw_planet_text(plPlanetView *view, plCamera *camera, plVec3 position, const char *text, float size, uint32_t color);
 

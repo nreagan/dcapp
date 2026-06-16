@@ -69,4 +69,5 @@
 | `dcapp` | Run a display |
 | `dcapp-validate` | Validate XML without rendering |
 | `dcapp-genheader` | Generate C header from display |
-| `dcapp-planet-chunkgen` | Convert DEM to chunked terrain |
+| `dcapp-planet-preprocess` | Convert DEM to chunked terrain |
+| `dcapp-planet-backfill` | Generate optional reference spheroid meshes from planet metadata |

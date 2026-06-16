@@ -8,7 +8,7 @@ popd
 set "RUN_DIR=%DCAPP_HOME%\pilotlight\out"
 
 if "%~1"=="" (
-    echo Usage: dcapp-planet-chunkgen.bat ^<input_dem^> ^<output_dir^> --radius ^<N^> [options]
+    echo Usage: dcapp-planet-preprocess.bat ^<input_dem^> ^<output_dir^> --radius ^<N^> [options]
     exit /b 1
 )
 
@@ -26,5 +26,5 @@ goto argloop
 :endargs
 
 cd /d "%RUN_DIR%"
-echo pilot_light.exe -a dcapp-planet-chunkgen "%INPUT%" "%OUTPUT%"%ARGS%
-pilot_light.exe -a dcapp-planet-chunkgen "%INPUT%" "%OUTPUT%"%ARGS%
+echo pilot_light.exe -a dcapp-planet-preprocess "%INPUT%" "%OUTPUT%"%ARGS%
+pilot_light.exe -a dcapp-planet-preprocess "%INPUT%" "%OUTPUT%"%ARGS%

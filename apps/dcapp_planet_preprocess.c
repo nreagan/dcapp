@@ -1,11 +1,11 @@
 /*
-   dcapp_planet_chunkgen.c
+   dcapp_planet_preprocess.c
 
    Pilotlight app that converts a GeoTIFF DEM into .chu chunk files
    for the planet rendering pipeline.
 
    Usage:
-     pilot_light -a dcapp-planet-chunkgen <input_dem> <output_dir> [options]
+     pilot_light -a dcapp-planet-preprocess <input_dem> <output_dir> [options]
 */
 
 /*
@@ -104,7 +104,7 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, void *app_data) {
         return NULL;
     }
 
-    // get args (argv[0]=pilot_light, argv[1]=-a, argv[2]=dcapp-planet-chunkgen, argv[3]+=app args)
+    // get args (argv[0]=pilot_light, argv[1]=-a, argv[2]=dcapp-planet-preprocess, argv[3]+=app args)
     plIO  *io   = _ext_ioi->get_io();
     int    argc = io->iArgc - 3;
     char **argv = io->apArgv + 3;
@@ -189,7 +189,7 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, void *app_data) {
     //---- get DEM properties ----
 
     printf("========================================\n");
-    printf("dcapp-planet-chunkgen\n");
+    printf("dcapp-planet-preprocess\n");
     printf("========================================\n");
     printf("Input: %s\n", input_dem);
 
@@ -276,6 +276,7 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, void *app_data) {
     printf("Tree depth: %d\n", tree_depth);
     printf("Prefix: %s\n", prefix);
     printf("========================================\n\n");
+    const int total_steps = 3;
 
     //---- create output directory ----
 
@@ -333,7 +334,7 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, void *app_data) {
 
     //---- write metadata ----
 
-    printf("[Step 1/%d] Writing metadata...\n", 3);
+    printf("[Step 1/%d] Writing metadata...\n", total_steps);
 
     char meta_path[2048];
     snprintf(meta_path, sizeof(meta_path), "%s/%s.planet.json", output_dir, prefix);
@@ -398,7 +399,7 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, void *app_data) {
     double raw_min_h = min_height / dem_info.band_scale;
     double raw_max_h = max_height / dem_info.band_scale;
 
-    printf("\n[Step 2/%d] Tiling DEM into %u PNGs...\n", 3, tile_count);
+    printf("\n[Step 2/%d] Tiling DEM into %u PNGs...\n", total_steps, tile_count);
 
     for (uint32_t t = 0; t < tile_count; t++) {
         uint32_t col = t % cols;
@@ -428,7 +429,7 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, void *app_data) {
     for (uint32_t i = 0; i < tile_count; i++)
         remove(tiles[i].acOutputFile);
 
-    printf("\n[Step 3/%d] Processing chunks...\n", 3);
+    printf("\n[Step 3/%d] Processing chunks...\n", total_steps);
 
     _ext_planet_processor->process(&planet_info);
 
@@ -471,9 +472,9 @@ PL_EXPORT void pl_app_shutdown(void *app_data) {}
 //-----------------------------------------------------------------------------
 
 static void _show_help(void) {
-    printf("dcapp-planet-chunkgen - Convert GeoTIFF DEM to planet chunk files\n\n");
+    printf("dcapp-planet-preprocess - Convert GeoTIFF DEM to planet chunk files\n\n");
     printf("Usage:\n");
-    printf("  dcapp-planet-chunkgen <input_dem> <output_dir> [options]\n\n");
+    printf("  dcapp-planet-preprocess <input_dem> <output_dir> [options]\n\n");
     printf("Options:\n");
     printf("  --radius N             Planet radius in meters (default: auto-detect from DEM)\n");
     printf("  --tile-size N          Tile dimensions in pixels (default: 4096)\n");

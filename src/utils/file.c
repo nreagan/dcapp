@@ -290,6 +290,22 @@ char *dc_utils_load_text_file(const char *path) {
     return buffer;
 }
 
+bool dc_utils_write_binary_file(const char *path, const void *data, size_t size) {
+    if (!path || (!data && size > 0)) {
+        return false;
+    }
+
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        return false;
+    }
+
+    bool ok = fwrite(data, 1, size, file) == size;
+    if (fclose(file) != 0)
+        ok = false;
+    return ok;
+}
+
 bool dc_utils_file_exists(const char *path) {
     if (!path) {
         return false;

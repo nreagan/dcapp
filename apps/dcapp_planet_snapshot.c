@@ -54,6 +54,7 @@ typedef struct AppData {
     const char *output;
     const char *vertex_shader;
     const char *fragment_shader;
+    const char *mesh;
 
     // Camera interpretation
     _SnapshotCrs crs;
@@ -73,6 +74,7 @@ typedef struct AppData {
     plWindow *window;
     plPlanet *planet;
     plPlanetView *view;
+    plPlanetMesh *planet_mesh;
     plPlanetProcessInfo process_info;
 
     // GPU readback target
@@ -241,6 +243,17 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, AppData *app) {
     view_opts.fTau = SNAPSHOT_TAU;
     _ext_planet->set_view_runtime_options(app->view, view_opts);
 
+    if (app->mesh) {
+        cmd = _ext_starter->get_temporary_command_buffer();
+        app->planet_mesh = _ext_planet->load_mesh(cmd, app->mesh);
+        _ext_starter->submit_temporary_command_buffer(cmd);
+        if (!app->planet_mesh) {
+            fprintf(stderr, "Error: failed to load mesh: %s\n", app->mesh);
+            io->bRunning = false;
+            return app;
+        }
+    }
+
     app->readback_size = (size_t)app->width * (size_t)app->height * 4;
     const plBufferDesc readback_desc = {
         .tUsage = PL_BUFFER_USAGE_STAGING,
@@ -322,6 +335,8 @@ PL_EXPORT void pl_app_update(AppData *app) {
     // Render one frame and watch tile streaming settle.
     plCommandBuffer *cmd = _ext_starter->get_command_buffer();
     _ext_planet->prepare(app->planet, cmd);
+    if (app->planet_mesh)
+        _ext_planet->draw_mesh(app->view, app->planet_mesh, PL_COLOR_32_RGBA(0.30f, 0.36f, 0.26f, 1.0f));
     _ext_planet->render_view(app->view, &camera, cmd);
 
     plPlanetStreamStats stream_stats = _ext_planet->get_stream_stats(app->planet);
@@ -381,6 +396,8 @@ PL_EXPORT void pl_app_shutdown(AppData *app) {
 
     if (app->view && _ext_planet)
         _ext_planet->cleanup_view(app->view);
+    if (app->planet_mesh && _ext_planet)
+        _ext_planet->cleanup_mesh(app->planet_mesh);
     if (app->planet && _ext_planet)
         _ext_planet->cleanup_planet(app->planet);
     if (app->readback_buffer.uData != 0 && device && _ext_gfx) {
@@ -435,6 +452,7 @@ static void _show_help(void) {
     printf("  --width N                Output width (default: 1024)\n");
     printf("  --height N               Output height (default: 1024)\n");
     printf("  --fov DEG                Vertical FOV (default: 60)\n");
+    printf("  --mesh FILE              Optional .dcpm mesh to draw with the planet\n");
     printf("  --vertex-shader FILE     Optional custom vertex shader\n");
     printf("  --fragment-shader FILE   Optional custom fragment shader\n");
     printf("  -h, --help               Show this help\n");
@@ -452,6 +470,7 @@ static bool _parse_args(int argc, char **argv, AppData *app) {
     const char *output = NULL;
     const char *vertex_shader = NULL;
     const char *fragment_shader = NULL;
+    const char *mesh = NULL;
     const char *crs = NULL;
     const char *attitude_frame = NULL;
     const char *lat = NULL;
@@ -507,6 +526,8 @@ static bool _parse_args(int argc, char **argv, AppData *app) {
             vertex_shader = argv[++i];
         else if (strcmp(argv[i], "--fragment-shader") == 0 && i + 1 < argc)
             fragment_shader = argv[++i];
+        else if (strcmp(argv[i], "--mesh") == 0 && i + 1 < argc)
+            mesh = argv[++i];
         else {
             fprintf(stderr, "Error: unknown or incomplete option: %s\n", argv[i]);
             return false;
@@ -589,6 +610,7 @@ static bool _parse_args(int argc, char **argv, AppData *app) {
     app->output = output;
     app->vertex_shader = vertex_shader;
     app->fragment_shader = fragment_shader;
+    app->mesh = mesh;
     if (lat) app->lat = dc_utils_string_to_double(lat);
     if (lon) app->lon = dc_utils_string_to_double(lon);
     if (elevation) app->elevation = dc_utils_string_to_double(elevation);

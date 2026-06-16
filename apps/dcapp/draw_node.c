@@ -50,6 +50,7 @@ static void _draw_node_stencil(_AppData *app_data, _NodeIndex node_index, _Node 
 static void _draw_node_planet_breadcrumbs(_AppData *app_data, _Node *node, plPlanetView *view);
 static void _draw_node_planet_ellipse(_AppData *app_data, _Node *node, plPlanetView *view);
 static void _draw_node_planet_line(_AppData *app_data, _Node *node, plPlanetView *view);
+static void _draw_node_planet_mesh(_AppData *app_data, _Node *node, plPlanetView *view);
 static void _draw_node_planet_polygon(_AppData *app_data, _Node *node, plPlanetView *view);
 static void _draw_node_planet_sphere(_AppData *app_data, _Node *node, DcAppDrawContext *ctx, DcAppDrawPlanetViewHandle view);
 static void _draw_node_planet_text(_AppData *app_data, _Node *node, DcAppDrawContext *ctx, DcAppDrawPlanetViewHandle view);
@@ -4636,6 +4637,32 @@ static void _draw_node_planet_line(_AppData *app_data, _Node *node, plPlanetView
     free(pts3d);
 }
 
+static void _draw_node_planet_mesh(_AppData *app_data, _Node *node, plPlanetView *view) {
+    if (!node->planet_mesh.source || node->planet_mesh.source[0] == '\0') return;
+    if (node->planet_mesh.load_failed) return;
+
+    if (!node->planet_mesh.mesh) {
+        plCommandBuffer *cmd_buf = _ext_starter->get_temporary_command_buffer();
+        node->planet_mesh.mesh = _ext_planet->load_mesh(cmd_buf, node->planet_mesh.source);
+        _ext_starter->submit_temporary_command_buffer(cmd_buf);
+        if (!node->planet_mesh.mesh) {
+            DC_LOG_ERROR("PlanetMesh", "Failed to load mesh: %s", node->planet_mesh.source);
+            node->planet_mesh.load_failed = true;
+            return;
+        }
+    }
+
+    float fc[4] = {0.35f, 0.40f, 0.32f, 1.0f};
+    if (node->planet_mesh.config_flags & NODE_CONFIG_FLAG_FILL_ENABLED) {
+        fc[0] = node->planet_mesh.fill_color.r != DC_APP_VAL_INDEX_UNDEFINED ? (float)dc_app_lookup_get_value(app_data->lookup, node->planet_mesh.fill_color.r)->value_double : fc[0];
+        fc[1] = node->planet_mesh.fill_color.g != DC_APP_VAL_INDEX_UNDEFINED ? (float)dc_app_lookup_get_value(app_data->lookup, node->planet_mesh.fill_color.g)->value_double : fc[1];
+        fc[2] = node->planet_mesh.fill_color.b != DC_APP_VAL_INDEX_UNDEFINED ? (float)dc_app_lookup_get_value(app_data->lookup, node->planet_mesh.fill_color.b)->value_double : fc[2];
+        fc[3] = node->planet_mesh.fill_color.a != DC_APP_VAL_INDEX_UNDEFINED ? (float)dc_app_lookup_get_value(app_data->lookup, node->planet_mesh.fill_color.a)->value_double : fc[3];
+    }
+
+    dc_app_draw_planet_mesh(view, node->planet_mesh.mesh, PL_COLOR_32_RGBA(fc[0], fc[1], fc[2], fc[3]));
+}
+
 static void _draw_node_planet_polygon(_AppData *app_data, _Node *node, plPlanetView *view) {
     _PlanetDef *def = &app_data->sb_planet_defs[node->planet_polygon.planet_def_index];
 
@@ -5165,6 +5192,8 @@ static void _draw_node_planet_view(_AppData *app_data, _NodeIndex node_index, _N
                 _draw_node_planet_ellipse(app_data, child, view);
             else if (child->type == NODE_TYPE_PLANET_LINE)
                 _draw_node_planet_line(app_data, child, view);
+            else if (child->type == NODE_TYPE_PLANET_MESH)
+                _draw_node_planet_mesh(app_data, child, view);
             else if (child->type == NODE_TYPE_PLANET_POLYGON)
                 _draw_node_planet_polygon(app_data, child, view);
             else if (child->type == NODE_TYPE_PLANET_SPHERE)

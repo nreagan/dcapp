@@ -73,8 +73,10 @@ rm -f ../../pilotlight/out/dcapp.so
 rm -f ../../pilotlight/out/dcapp_*.so
 rm -f ../../pilotlight/out/dcapp-genheader
 rm -f ../../pilotlight/out/dcapp-validate
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen.so
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen_*.so
+rm -f ../../pilotlight/out/dcapp-planet-backfill.so
+rm -f ../../pilotlight/out/dcapp-planet-backfill_*.so
+rm -f ../../pilotlight/out/dcapp-planet-preprocess.so
+rm -f ../../pilotlight/out/dcapp-planet-preprocess_*.so
 rm -f ../../pilotlight/out/dcapp-planet-snapshot.so
 rm -f ../../pilotlight/out/dcapp-planet-snapshot_*.so
 
@@ -318,7 +320,41 @@ fi
 echo ${CYAN}Results: ${NC} ${PL_RESULT}
 echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
 
-#~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | release ~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-backfill | release ~~~~~~~~~~~~~~~~~~~~~~~~
+
+PL_RESULT=${BOLD}${GREEN}Successful.${NC}
+PL_DEFINES=""
+PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb "
+PL_LINK_DIRECTORIES="-L../../pilotlight/out -Wl,-rpath,../../pilotlight/out -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/usr/lib/x86_64-linux-gnu "
+PL_COMPILER_FLAGS="-fPIC -DNDEBUG "
+PL_LINKER_FLAGS="-ldl -lm "
+PL_STATIC_LINK_LIBRARIES=""
+PL_DYNAMIC_LINK_LIBRARIES=""
+PL_SOURCES="../../apps/dcapp_planet_backfill.c ../../src/geo.c ../../src/utils/file.c ../../src/utils/log.c "
+
+# run compiler (and linker)
+echo
+echo ${YELLOW}Step: dcapp-planet-backfill${NC}
+echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
+echo ${CYAN}Compiling and Linking...${NC}
+gcc -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-backfill.so"
+
+# check build status
+if [ $? -ne 0 ]
+then
+    PL_RESULT=${BOLD}${RED}Failed.${NC}
+    PL_BUILD_STATUS=1
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+popd >/dev/null
+exit 1
+fi
+
+# print results
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+
+#~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-preprocess | release ~~~~~~~~~~~~~~~~~~~~~~~~
 
 PL_RESULT=${BOLD}${GREEN}Successful.${NC}
 PL_DEFINES=""
@@ -328,14 +364,14 @@ PL_COMPILER_FLAGS="-fPIC -DNDEBUG "
 PL_LINKER_FLAGS="-ldl -lm -lgdal "
 PL_STATIC_LINK_LIBRARIES=""
 PL_DYNAMIC_LINK_LIBRARIES=""
-PL_SOURCES="../../apps/dcapp_planet_chunkgen.c ../../src/utils/file.c ../../src/utils/log.c "
+PL_SOURCES="../../apps/dcapp_planet_preprocess.c ../../src/utils/file.c ../../src/utils/log.c "
 
 # run compiler (and linker)
 echo
-echo ${YELLOW}Step: dcapp-planet-chunkgen${NC}
+echo ${YELLOW}Step: dcapp-planet-preprocess${NC}
 echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
 echo ${CYAN}Compiling and Linking...${NC}
-gcc -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-chunkgen.so"
+gcc -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-preprocess.so"
 
 # check build status
 if [ $? -ne 0 ]
@@ -419,8 +455,10 @@ rm -f ../../pilotlight/out/dcapp.so
 rm -f ../../pilotlight/out/dcapp_*.so
 rm -f ../../pilotlight/out/dcapp-genheader
 rm -f ../../pilotlight/out/dcapp-validate
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen.so
-rm -f ../../pilotlight/out/dcapp-planet-chunkgen_*.so
+rm -f ../../pilotlight/out/dcapp-planet-backfill.so
+rm -f ../../pilotlight/out/dcapp-planet-backfill_*.so
+rm -f ../../pilotlight/out/dcapp-planet-preprocess.so
+rm -f ../../pilotlight/out/dcapp-planet-preprocess_*.so
 rm -f ../../pilotlight/out/dcapp-planet-snapshot.so
 rm -f ../../pilotlight/out/dcapp-planet-snapshot_*.so
 
@@ -664,7 +702,41 @@ fi
 echo ${CYAN}Results: ${NC} ${PL_RESULT}
 echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
 
-#~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+#~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-backfill | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PL_RESULT=${BOLD}${GREEN}Successful.${NC}
+PL_DEFINES=""
+PL_INCLUDE_DIRECTORIES="-I../../src -I../../extensions -I../../shaders -I../../pilotlight/src -I../../pilotlight/libs -I../../pilotlight/extensions -I../../pilotlight/shaders -I../../pilotlight/dependencies/stb "
+PL_LINK_DIRECTORIES="-L../../pilotlight/out -Wl,-rpath,../../pilotlight/out -L/usr/lib/x86_64-linux-gnu -Wl,-rpath,/usr/lib/x86_64-linux-gnu "
+PL_COMPILER_FLAGS="-fPIC --debug -g -O0 --debug -g "
+PL_LINKER_FLAGS="-ldl -lm "
+PL_STATIC_LINK_LIBRARIES=""
+PL_DYNAMIC_LINK_LIBRARIES=""
+PL_SOURCES="../../apps/dcapp_planet_backfill.c ../../src/geo.c ../../src/utils/file.c ../../src/utils/log.c "
+
+# run compiler (and linker)
+echo
+echo ${YELLOW}Step: dcapp-planet-backfill${NC}
+echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
+echo ${CYAN}Compiling and Linking...${NC}
+gcc -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-backfill.so"
+
+# check build status
+if [ $? -ne 0 ]
+then
+    PL_RESULT=${BOLD}${RED}Failed.${NC}
+    PL_BUILD_STATUS=1
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+popd >/dev/null
+exit 1
+fi
+
+# print results
+echo ${CYAN}Results: ${NC} ${PL_RESULT}
+echo ${CYAN}~~~~~~~~~~~~~~~~~~~~~~${NC}
+
+#~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-preprocess | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 PL_RESULT=${BOLD}${GREEN}Successful.${NC}
 PL_DEFINES=""
@@ -674,14 +746,14 @@ PL_COMPILER_FLAGS="-fPIC --debug -g -O0 --debug -g "
 PL_LINKER_FLAGS="-ldl -lm -lgdal "
 PL_STATIC_LINK_LIBRARIES=""
 PL_DYNAMIC_LINK_LIBRARIES=""
-PL_SOURCES="../../apps/dcapp_planet_chunkgen.c ../../src/utils/file.c ../../src/utils/log.c "
+PL_SOURCES="../../apps/dcapp_planet_preprocess.c ../../src/utils/file.c ../../src/utils/log.c "
 
 # run compiler (and linker)
 echo
-echo ${YELLOW}Step: dcapp-planet-chunkgen${NC}
+echo ${YELLOW}Step: dcapp-planet-preprocess${NC}
 echo ${YELLOW}~~~~~~~~~~~~~~~~~~~${NC}
 echo ${CYAN}Compiling and Linking...${NC}
-gcc -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-chunkgen.so"
+gcc -shared $PL_SOURCES $PL_INCLUDE_DIRECTORIES $PL_DEFINES $PL_COMPILER_FLAGS $PL_INCLUDE_DIRECTORIES $PL_LINK_DIRECTORIES $PL_STATIC_LINK_LIBRARIES $PL_DYNAMIC_LINK_LIBRARIES $PL_LINKER_FLAGS -o "./../../pilotlight/out/libdcapp-planet-preprocess.so"
 
 # check build status
 if [ $? -ne 0 ]
