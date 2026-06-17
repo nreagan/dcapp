@@ -44,7 +44,7 @@
 #include "pl_mesh_ext.h"
 
 // our extensions
-#include "pl_planet_ext.h"
+#include "legacy/pl_planet_ext.h"
 #include "pl_planet_processor_ext.h"
 
 // dear imgui
@@ -181,7 +181,7 @@ pl_app_load(plApiRegistryI* ptApiRegistry, plAppData* ptAppData)
     // load extensions
     // ptExtensionRegistry->add_path("../../pl-terrain/out");
     ptExtensionRegistry->load("pl_unity_ext", NULL, NULL, true);
-    ptExtensionRegistry->load("pl_planet_ext", NULL, NULL, true);
+    ptExtensionRegistry->load("pl_planet_legacy_ext", NULL, NULL, true);
     ptExtensionRegistry->load("pl_planet_processor_ext", NULL, NULL, true);
     ptExtensionRegistry->load("pl_platform_ext", "pl_load_platform_ext", "pl_unload_platform_ext", false);
     ptExtensionRegistry->load("pl_dear_imgui_ext", "pl_load_dear_imgui_ext", "pl_unload_dear_imgui_ext", false);

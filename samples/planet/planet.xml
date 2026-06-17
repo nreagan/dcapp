@@ -6,7 +6,7 @@
     <!-- Slider raw values (all 0-100 range, mapped to actual values via Set) -->
     <Variable Type="#_variable_double_" InitialValue="17.433">SliderLat</Variable>
     <Variable Type="#_variable_double_" InitialValue="95.908">SliderLon</Variable>
-    <Variable Type="#_variable_double_" InitialValue="40">SliderEle</Variable>
+    <Variable Type="#_variable_double_" InitialValue="1">SliderEle</Variable>
     <Variable Type="#_variable_double_" InitialValue="0">SliderHdg</Variable>
     <Variable Type="#_variable_double_" InitialValue="30">SliderTau</Variable>
     <Variable Type="#_variable_double_" InitialValue="0">SliderLightY</Variable>
@@ -39,17 +39,11 @@
     <!-- Orthographic projection toggle -->
     <Variable Type="#_variable_integer_" InitialValue="0">UseOrtho</Variable>
 
-    <!-- Texture overlay -->
-    <Variable Type="#_variable_integer_" InitialValue="0">TextureRefresh</Variable>
-    <Variable Type="#_variable_double_" InitialValue="2000">TexMpp</Variable>
-
     <Logic File="logic/logic.so"/>
 
     <!-- Top-level planet definition (shared by both views) -->
-    <Planet Name="Moon" CRS="#_planet_crs_geodetic_" MeshCacheSize="128" LightDirectionX="-1" LightDirectionY="@LightY" LightDirectionZ="-1">
+    <Planet Name="Moon" CRS="#_planet_crs_geodetic_" LightDirectionX="-1" LightDirectionY="@LightY" LightDirectionZ="-1">
         <PlanetData File="../../data/LDEM_45S_400M.planet.json"/>
-        <PlanetTexture File="../../assets/nasa-worm.png" MetersPerPixel="@TexMpp"
-            Latitude="-90" Longitude="180" FireRefresh="@TextureRefresh"/>
         <PlanetShader Index="1" FragmentShader="shaders/planet_elevation.frag"/>
         <PlanetShader Index="2" FragmentShader="shaders/planet_slope.frag"/>
         <PlanetShader Index="3" VertexShader="shaders/planet_flat.vert" FragmentShader="shaders/planet_elevation.frag"/>
@@ -78,34 +72,8 @@
             <Set Variable="LightY" Operator="#_set_multiply_">0.02</Set>
             <Set Variable="LightY" Operator="#_set_subtract_">1</Set>
 
-            <!-- Toggle texture scale based on refresh state -->
-            <If Value1="@TextureRefresh" Operator="#_if_eq_" Value2="0">
-                <Set Variable="TexMpp">1</Set>
-            </If>
-            <If Value1="@TextureRefresh" Operator="#_if_eq_" Value2="1">
-                <Set Variable="TexMpp">2000</Set>
-            </If>
-
-            <!-- ========== TEXTURE REFRESH ========== -->
-            <Button Type="#_button_toggle_" X="60" Y="806" Width="90" Height="22"
-                Variable="TextureRefresh" On="1" Off="0"
-                LocalAlignX="#_align_center_" LocalAlignY="#_align_middle_">
-                <ButtonIndicatorOn>
-                    <Rectangle FillColor="0.2 0.5 0.2" LineColor="0.3 0.8 0.3" LineWidth="2"/>
-                    <Text ParentAlignX="#_align_center_" ParentAlignY="#_align_middle_"
-                        LocalAlignX="#_align_center_" LocalAlignY="#_align_middle_"
-                        Size="11" FillColor="#_color_white_">Refresh</Text>
-                </ButtonIndicatorOn>
-                <ButtonIndicatorOff>
-                    <Rectangle FillColor="0.15 0.15 0.15" LineColor="0.35 0.35 0.35" LineWidth="1"/>
-                    <Text ParentAlignX="#_align_center_" ParentAlignY="#_align_middle_"
-                        LocalAlignX="#_align_center_" LocalAlignY="#_align_middle_"
-                        Size="11" FillColor="0.6 0.6 0.6">Refresh</Text>
-                </ButtonIndicatorOff>
-            </Button>
-
             <!-- ========== ORTHO TOGGLE ========== -->
-            <Button Type="#_button_toggle_" X="170" Y="806" Width="90" Height="22"
+            <Button Type="#_button_toggle_" X="60" Y="806" Width="90" Height="22"
                 Variable="UseOrtho" On="1" Off="0"
                 LocalAlignX="#_align_center_" LocalAlignY="#_align_middle_">
                 <ButtonIndicatorOn>

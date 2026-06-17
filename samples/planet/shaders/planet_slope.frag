@@ -3,85 +3,50 @@
 
 #include "pl_shader_interop_planet.h"
 
-//-----------------------------------------------------------------------------
-// [SECTION] input & output
-//-----------------------------------------------------------------------------
-
-// input
 layout(location = 0) in struct plShaderIn {
     vec4 tColor;
     vec3 tWorldPosition;
     vec3 tWorldNormal;
     vec2 tUV;
+    float fHeight;
 } tShaderIn;
 
-// output
 layout(location = 0) out vec4 outColor;
-
-layout(set = 0, binding = 0)  uniform sampler tSamplerLinearClamp;
-layout(set = 0, binding = 1)  uniform texture2D at2DTextures[PL_PLANET_MAX_BINDLESS_TEXTURES];
 
 layout(set = 3, binding = 0) uniform PL_DYNAMIC_DATA
 {
     plGpuDynPlanetData tData;
 } tDynamicData;
 
-//-----------------------------------------------------------------------------
-// [SECTION] entry
-//-----------------------------------------------------------------------------
-
 void main()
 {
-    vec2 tUVActual = tShaderIn.tUV;
-    tUVActual = tUVActual * tDynamicData.tData.tUVInfo.xy;
-    tUVActual = tUVActual + tDynamicData.tData.tUVInfo.zw;
-
     vec3 normal = normalize(tShaderIn.tWorldNormal);
-    vec4 tHazardColor = texture(sampler2D(at2DTextures[tDynamicData.tData.uTextureIndex], tSamplerLinearClamp), tUVActual);
-
-    // Diffuse lighting
-    vec3 w_i = normalize(tDynamicData.tData.tLightDirection);
-    float diffuse = max(0.0, dot(normal, w_i));
+    vec3 lightDirection = normalize(tDynamicData.tData.tLightDirection);
+    float diffuse = max(0.0, dot(normal, lightDirection));
     float ambient = 0.15;
 
-    if (tHazardColor.rgb == vec3(0.0)) {
+    vec3 radial = normalize(tShaderIn.tWorldPosition);
+    float slopeDeg = degrees(acos(clamp(dot(normal, radial), 0.0, 1.0)));
 
-        // Slope angle in degrees from the radial (outward) direction.
-        vec3 radial = normalize(tShaderIn.tWorldPosition);
-        float cosAngle = dot(normal, radial);
-        float slopeDeg = degrees(acos(clamp(cosAngle, 0.0, 1.0)));
+    vec3 cFlat = vec3(0.55, 0.52, 0.48);
+    vec3 cModerate = vec3(0.85, 0.62, 0.15);
+    vec3 cSteep = vec3(0.78, 0.12, 0.10);
 
-        // Discrete 3-band classification with hard transitions:
-        //   0 -  5 deg : warm stone gray   (flat terrain)
-        //   5 - 10 deg : golden amber      (moderate slopes)
-        //  10+    deg  : deep crimson       (steep / hazardous)
-        vec3 cFlat    = vec3(0.55, 0.52, 0.48);  // warm stone gray
-        vec3 cModerate = vec3(0.85, 0.62, 0.15); // golden amber
-        vec3 cSteep   = vec3(0.78, 0.12, 0.10);  // deep crimson
+    vec3 color = cFlat;
+    color = mix(color, cModerate, step(5.0, slopeDeg));
+    color = mix(color, cSteep, step(10.0, slopeDeg));
+    color *= diffuse + ambient;
 
-        // Hard step transitions (no blending between bands)
-        vec3 color = cFlat;
-        color = mix(color, cModerate, step(5.0, slopeDeg));
-        color = mix(color, cSteep,    step(10.0, slopeDeg));
-
-        // blend
-        outColor.rgb = color * (diffuse + ambient);
-        outColor.a   = 1.0;
-    } else {
-
-        vec3 sunlightColor = vec3(1.0, 1.0, 1.0);
-        outColor.xyz = diffuse * (max(0.0, dot(normal, w_i)) * sunlightColor + ambient);
-        outColor.a = 1.0;
-        outColor.rgb += tHazardColor.rgb * 0.2;
-    }
-
-    if (bool(tDynamicData.tData.tFlags & PL_TERRAIN_SHADER_FLAGS_SHOW_LEVELS))
+    if(bool(tDynamicData.tData.tFlags & PL_TERRAIN_SHADER_FLAGS_SHOW_LEVELS) ||
+       bool(tDynamicData.tData.tFlags & PL_TERRAIN_SHADER_FLAGS_SHOW_CHUNKS))
     {
-        outColor += tShaderIn.tColor;
+        color += tShaderIn.tColor.rgb;
     }
 
-    if (bool(tDynamicData.tData.tFlags & PL_TERRAIN_SHADER_FLAGS_WIREFRAME))
+    if(bool(tDynamicData.tData.tFlags & PL_TERRAIN_SHADER_FLAGS_WIREFRAME))
     {
-        outColor = tShaderIn.tColor;
+        color = max(color, tShaderIn.tColor.rgb + vec3(0.35));
     }
+
+    outColor = vec4(color, 1.0);
 }

@@ -25,7 +25,6 @@ PL_EXPORT void  pl_app_update(_AppData *app_data);
 static void *get_variable_value_addr(DcAppContext *app_ctx, const char *name);
 static double   _get_update_rate(_AppData *app_data);
 static void     _process_logic_updates(_AppData *app_data);
-static bool     _build_planet_texture(_AppData *app_data, _PlanetDef *def, _PlanetTextureEntry *entry, plPlanetTexture *out);
 static void     _init_planets(_AppData *app_data);
 static void     _update_planet_defs(_AppData *app_data);
 static void     _load_apis(plApiRegistryI *api_registry);
@@ -50,7 +49,6 @@ PL_EXPORT void *pl_app_load(plApiRegistryI *api_registry, _AppData *app_data) {
     // load dcapp extensions (separate from pilotlight's draw extensions)
     extension_registry->load("dc_draw_ext", NULL, NULL, true);
     extension_registry->load("dc_draw_backend_ext", NULL, NULL, true);
-    extension_registry->load("pl_planet_processor_ext", NULL, NULL, true);
     extension_registry->load("pl_planet_ext", NULL, NULL, true);
 
     _load_apis(api_registry);
@@ -826,79 +824,6 @@ static void _process_logic_updates(_AppData *app_data) {
     }
 }
 
-static bool _build_planet_texture(_AppData *app_data, _PlanetDef *def, _PlanetTextureEntry *entry, plPlanetTexture *out) {
-    if (!entry->source || entry->source[0] == '\0') return false;
-    if (!_ext_vfs->does_file_exist(entry->source)) return false;
-    memset(out, 0, sizeof(*out));
-    out->pcPath = entry->source;
-    if (entry->mpp != DC_APP_VAL_INDEX_UNDEFINED)
-        out->fMetersPerPixel = (float)dc_app_lookup_get_value(app_data->lookup, entry->mpp)->value_double;
-    if (out->fMetersPerPixel <= 0.0f) {
-        DC_LOG_ERROR("PlanetTexture", "MetersPerPixel must be greater than zero for '%s'", entry->source);
-        return false;
-    }
-
-    if (entry->originX != DC_APP_VAL_INDEX_UNDEFINED && entry->originY != DC_APP_VAL_INDEX_UNDEFINED) {
-        out->dOriginX = dc_app_lookup_get_value(app_data->lookup, entry->originX)->value_double;
-        out->dOriginY = dc_app_lookup_get_value(app_data->lookup, entry->originY)->value_double;
-    } else if (entry->originX != DC_APP_VAL_INDEX_UNDEFINED || entry->originY != DC_APP_VAL_INDEX_UNDEFINED) {
-        DC_LOG_ERROR("PlanetTexture", "OriginX and OriginY must be specified together for '%s'", entry->source);
-        return false;
-    } else if (entry->crs == DC_APP_PLANET_CRS_CARTESIAN &&
-               entry->xyz.x != DC_APP_VAL_INDEX_UNDEFINED &&
-               entry->xyz.y != DC_APP_VAL_INDEX_UNDEFINED &&
-               entry->xyz.z != DC_APP_VAL_INDEX_UNDEFINED) {
-        plVec3d cartesian_in = {
-            dc_app_lookup_get_value(app_data->lookup, entry->xyz.x)->value_double,
-            dc_app_lookup_get_value(app_data->lookup, entry->xyz.y)->value_double,
-            dc_app_lookup_get_value(app_data->lookup, entry->xyz.z)->value_double
-        };
-        double r = sqrt(cartesian_in.x * cartesian_in.x +
-                        cartesian_in.y * cartesian_in.y +
-                        cartesian_in.z * cartesian_in.z);
-        if (r <= 0.0) {
-            DC_LOG_WARN("PlanetTexture", "Skipping texture with degenerate cartesian origin for '%s'", entry->source);
-            return false;
-        }
-        plVec3d geodetic_out;
-        plVec2d polar_out;
-        dc_geo_cartesian_to_geodetic_d(&def->cartesian_crs, &def->geodetic_crs, &cartesian_in, &geodetic_out, 1);
-        if (def->legacy_projected_origin) {
-            // Old planet metadata expects the historical user-longitude projection
-            // convention. New metadata uses real projected CRS meters.
-            dc_geo_user_geodetic_to_polar_stereo_d(&def->geodetic_crs, &def->polar_crs, &geodetic_out, &polar_out, 1);
-            polar_out.y = -polar_out.y;
-        } else {
-            dc_geo_geodetic_to_polar_stereo_d(&def->geodetic_crs, &def->polar_crs, &geodetic_out, &polar_out, 1);
-        }
-        out->dOriginX = polar_out.x;
-        out->dOriginY = polar_out.y;
-    } else if (entry->lle.lat != DC_APP_VAL_INDEX_UNDEFINED &&
-               entry->lle.lon != DC_APP_VAL_INDEX_UNDEFINED) {
-        plVec3d geodetic_in = {
-            dc_app_lookup_get_value(app_data->lookup, entry->lle.lat)->value_double,
-            dc_app_lookup_get_value(app_data->lookup, entry->lle.lon)->value_double,
-            0.0
-        };
-        plVec2d polar_out;
-        if (def->legacy_projected_origin) {
-            // Old planet metadata expects the historical user-longitude projection
-            // convention. New metadata uses real projected CRS meters.
-            dc_geo_user_geodetic_to_polar_stereo_d(&def->geodetic_crs, &def->polar_crs, &geodetic_in, &polar_out, 1);
-            polar_out.y = -polar_out.y;
-        } else {
-            dc_geo_geodetic_to_polar_stereo_d(&def->geodetic_crs, &def->polar_crs, &geodetic_in, &polar_out, 1);
-        }
-        out->dOriginX = polar_out.x;
-        out->dOriginY = polar_out.y;
-    } else {
-        DC_LOG_ERROR("PlanetTexture", "Texture center must be OriginX/OriginY, Latitude/Longitude, or complete X/Y/Z for '%s'", entry->source);
-        return false;
-    }
-
-    return true;
-}
-
 static void _init_planets(_AppData *app_data) {
     int def_count  = sbcount(app_data->sb_planet_defs);
     int view_count = sbcount(app_data->sb_planet_view_node_indices);
@@ -934,20 +859,10 @@ static void _init_planets(_AppData *app_data) {
         def->geodetic_crs = def->handle->geodetic_crs;
         def->cartesian_crs = def->handle->cartesian_crs;
         def->polar_crs = def->handle->polar_crs;
-        def->legacy_projected_origin = def->handle->legacy_projected_origin;
         def->index = def->handle->index;
 
-        plPlanet *planet = dc_app_planet_pl(def->handle);
-
-        // apply the initial texture overlay if one was parsed.
-        if (sbcount(def->sb_textures) > 0) {
-            plPlanetTexture texture;
-            if (_build_planet_texture(app_data, def, &def->sb_textures[0], &texture)) {
-                DC_LOG_INFO("Planet", "  [%d] texture: %s (mpp=%.1f, originX=%.1f, originY=%.1f)",
-                            i, texture.pcPath, texture.fMetersPerPixel, texture.dOriginX, texture.dOriginY);
-                _ext_planet->set_texture(planet, &texture, 0);
-            }
-        }
+        if (sbcount(def->sb_textures) > 0)
+            DC_LOG_WARN("Planet", "  [%d] '%s': PlanetTexture overlays are not implemented by the canonical planet renderer yet", i, def->name ? def->name : "?");
 
         DC_LOG_INFO("Planet", "  [%d] '%s' created (radius=%.0f)", i, def->name, def->radius);
     }
@@ -1001,22 +916,6 @@ static void _update_planet_defs(_AppData *app_data) {
         plPlanet *planet = app_data->sb_planets[def->index];
         if (!planet) continue;
 
-        // texture refresh check
-        for (int t = 0; t < sbcount(def->sb_textures); t++) {
-            _PlanetTextureEntry *tex = &def->sb_textures[t];
-            if (tex->fire_refresh == DC_APP_VAL_INDEX_UNDEFINED) continue;
-            DcValue *refresh_val = dc_app_lookup_get_value(app_data->lookup, tex->fire_refresh);
-            if (!dc_value_is_equal(refresh_val, &tex->last_fire_refresh_value)) {
-                plPlanetTexture texture;
-                if (_build_planet_texture(app_data, def, tex, &texture)) {
-                    _ext_planet->set_texture(planet, &texture, 0);
-                } else {
-                    _ext_planet->set_texture(planet, NULL, 0);
-                }
-                tex->last_fire_refresh_value = *refresh_val;
-            }
-        }
-
         // light direction
         if (def->light_direction.x != DC_APP_VAL_INDEX_UNDEFINED ||
             def->light_direction.y != DC_APP_VAL_INDEX_UNDEFINED ||
@@ -1034,17 +933,6 @@ static void _update_planet_defs(_AppData *app_data) {
         }
 
     }
-
-    // prepares every shared planet once per frame.
-    for (int i = 0; i < sbcount(app_data->sb_planet_handles); i++) {
-        DcAppPlanetHandle handle = app_data->sb_planet_handles[i];
-        plPlanet *planet = dc_app_planet_pl(handle);
-        if (!planet) continue;
-
-        plCommandBuffer *cmd_buf = _ext_starter->get_temporary_command_buffer();
-        _ext_planet->prepare(planet, cmd_buf);
-        _ext_starter->submit_temporary_command_buffer(cmd_buf);
-    }
 }
 
 static void _load_apis(plApiRegistryI *api_registry) {
@@ -1061,7 +949,6 @@ static void _load_apis(plApiRegistryI *api_registry) {
     _ext_shader           = pl_get_api_latest(api_registry, plShaderI);
     _ext_planet           = pl_get_api_latest(api_registry, plPlanetI);
     _ext_draw          = pl_get_api_latest(api_registry, plDrawI);
-    _ext_planet_processor = pl_get_api_latest(api_registry, plPlanetProcessorI);
     _ext_camera           = pl_get_api_latest(api_registry, plCameraI);
     _ext_image            = pl_get_api_latest(api_registry, plImageI);
     _ext_resource         = pl_get_api_latest(api_registry, plResourceI);

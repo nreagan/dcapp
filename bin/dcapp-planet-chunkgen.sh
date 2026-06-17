@@ -5,43 +5,71 @@ DCAPP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$DCAPP_HOME/pilotlight/out"
 
 if [ $# -lt 2 ]; then
-    exec "$RUN_DIR/pilot_light" -a dcapp-planet-chunkgen --help
+    cd "$RUN_DIR"
+    exec ./pilot_light -a dcapp-planet-chunkgen --planet-help
 fi
 
-INPUT="$1"
-OUTPUT="$2"
-shift 2
-
-# Get absolute paths
-INPUT_ABS="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
-OUTPUT_ABS="$(mkdir -p "$OUTPUT" && cd "$OUTPUT" && pwd)"
-
-# Get relative paths using only bash
-get_relative_path() {
-    local source="$1"
-    local target="$2"
-
-    local common_part="$source"
-    local result=""
-
-    while [[ "${target#"$common_part"}" == "${target}" ]]; do
-        common_part="$(dirname "$common_part")"
-        result="../$result"
-    done
-
-    if [[ "$common_part" == "/" ]]; then
-        result="$result${target:1}"
+to_abs_output_dir() {
+    local path="$1"
+    mkdir -p "$path"
+    if [[ "$path" == /* ]]; then
+        echo "$(cd "$path" && pwd)"
     else
-        result="$result${target#"$common_part"/}"
+        echo "$(cd "$path" && pwd)"
     fi
-
-    echo "$result"
 }
 
-INPUT_REL="$(get_relative_path "$RUN_DIR" "$INPUT_ABS")"
-OUTPUT_REL="$(get_relative_path "$RUN_DIR" "$OUTPUT_ABS")"
+source_spec_to_abs() {
+    local spec="$1"
+    local path="$spec"
+    local suffix=""
+
+    if [[ "$spec" =~ ^(.+),([+-]?[0-9]+)$ ]]; then
+        path="${BASH_REMATCH[1]}"
+        suffix=",${BASH_REMATCH[2]}"
+    fi
+
+    if [[ -e "$path" ]]; then
+        local abs
+        if [[ "$path" == /* ]]; then
+            abs="$path"
+        else
+            abs="$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
+        fi
+        echo "$abs$suffix"
+    else
+        echo "$spec"
+    fi
+}
+
+OUTPUT_ABS="$(to_abs_output_dir "$1")"
+shift
+
+ARGS=("$OUTPUT_ABS")
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --source)
+            key="$1"
+            shift
+            ARGS+=("$key" "$(source_spec_to_abs "$1")")
+            ;;
+        --radius|--tile-size|--max-lod|--prefix)
+            key="$1"
+            shift
+            ARGS+=("$key" "$1")
+            ;;
+        *)
+            if [[ "$1" == -* ]]; then
+                ARGS+=("$1")
+            else
+                ARGS+=("$(source_spec_to_abs "$1")")
+            fi
+            ;;
+    esac
+    shift
+done
 
 cd "$RUN_DIR"
-cmd="./pilot_light -a dcapp-planet-chunkgen $INPUT_REL $OUTPUT_REL $*"
-echo "$cmd"
-exec $cmd
+cmd=("./pilot_light" "-a" "dcapp-planet-chunkgen" "${ARGS[@]}")
+echo "${cmd[*]}"
+exec "${cmd[@]}"

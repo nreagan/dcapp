@@ -127,11 +127,6 @@ plVec2 dc_app_draw_text_options_size(const char *text, dcDrawTextOptions options
 void   dc_app_draw_text_options(_AppData *app_data, const char *text, dcDrawTextOptions options);
 void   dc_app_draw_3d_sphere_textured(_AppData *app_data, uint32_t texture_id, plSphere sphere, const plMat4 *transform, uint32_t color);
 void   dc_app_draw_3d_sphere_filled(_AppData *app_data, plSphere sphere, uint32_t color);
-void   dc_app_draw_planet_polygon_filled(plPlanetView *view, plVec3 *points, uint32_t point_count, uint32_t color);
-void   dc_app_draw_planet_polygon(plPlanetView *view, plVec3 *points, uint32_t point_count, float line_width, uint32_t color);
-void   dc_app_draw_planet_line(plPlanetView *view, plVec3 *points, uint32_t point_count, float line_width, uint32_t color);
-void   dc_app_draw_planet_sphere(plPlanetView *view, float lon, float lat, float height, float radius, uint32_t color);
-void   dc_app_draw_planet_text(plPlanetView *view, plCamera *camera, plVec3 position, const char *text, float size, uint32_t color);
 
 const DcAppDrawApi *dc_app_draw_api(void);
 const DcAppMouseApi *dc_app_mouse_api(void);

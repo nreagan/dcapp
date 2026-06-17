@@ -61,8 +61,6 @@
 @if exist "../../pilotlight/out/dc_draw_ext_*.pdb" del "..\..\pilotlight\out\dc_draw_ext_*.pdb"
 @if exist "../../pilotlight/out/dc_draw_backend_ext.dll" del "..\..\pilotlight\out\dc_draw_backend_ext.dll"
 @if exist "../../pilotlight/out/dc_draw_backend_ext_*.pdb" del "..\..\pilotlight\out\dc_draw_backend_ext_*.pdb"
-@if exist "../../pilotlight/out/pl_planet_processor_ext.dll" del "..\..\pilotlight\out\pl_planet_processor_ext.dll"
-@if exist "../../pilotlight/out/pl_planet_processor_ext_*.pdb" del "..\..\pilotlight\out\pl_planet_processor_ext_*.pdb"
 @if exist "../../pilotlight/out/pl_planet_ext.dll" del "..\..\pilotlight\out\pl_planet_ext.dll"
 @if exist "../../pilotlight/out/pl_planet_ext_*.pdb" del "..\..\pilotlight\out\pl_planet_ext_*.pdb"
 @if exist "../../pilotlight/out/dcapp.dll" del "..\..\pilotlight\out\dcapp.dll"
@@ -73,16 +71,18 @@
 @if exist "../../pilotlight/out/dcapp-validate_*.pdb" del "..\..\pilotlight\out\dcapp-validate_*.pdb"
 @if exist "../../pilotlight/out/dcapp-planet-chunkgen.dll" del "..\..\pilotlight\out\dcapp-planet-chunkgen.dll"
 @if exist "../../pilotlight/out/dcapp-planet-chunkgen_*.pdb" del "..\..\pilotlight\out\dcapp-planet-chunkgen_*.pdb"
+@if exist "../../pilotlight/out/dcapp-planet-validate.dll" del "..\..\pilotlight\out\dcapp-planet-validate.dll"
+@if exist "../../pilotlight/out/dcapp-planet-validate_*.pdb" del "..\..\pilotlight\out\dcapp-planet-validate_*.pdb"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot.dll" del "..\..\pilotlight\out\dcapp-planet-snapshot.dll"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot_*.pdb" del "..\..\pilotlight\out\dcapp-planet-snapshot_*.pdb"
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~~ dc_draw_ext | release ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/dc_draw_ext.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../extensions/dc_draw_ext.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -111,11 +111,11 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~ dc_draw_backend_ext | release ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/dc_draw_backend_ext.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../extensions/dc_draw_backend_ext.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -142,46 +142,13 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
-::~~~~~~~~~~~~~~~~~~~~~~ pl_planet_processor_ext | release ~~~~~~~~~~~~~~~~~~~~~~~
-
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/pl_planet_processor_ext.c"
-
-:: run compiler (and linker)
-@echo.
-@echo [1m[93mStep: pl_planet_processor_ext[0m
-@echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
-@echo [1m[36mCompiling and Linking...[0m
-cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/pl_planet_processor_ext.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/pl_planet_processor_ext_%random%.pdb" %PL_LINK_DIRECTORIES%
-
-:: check build status
-@set PL_BUILD_STATUS=%ERRORLEVEL%
-
-:: failed
-@if %PL_BUILD_STATUS% NEQ 0 (
-    @echo [1m[91mCompilation Failed with error code[0m: %PL_BUILD_STATUS%
-    @set PL_RESULT=[1m[91mFailed.[0m
-    goto Cleanuprelease
-)
-
-:: print results
-@echo [36mResult: [0m %PL_RESULT%
-@echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
-
-:Exit_pl_planet_processor_ext
-
-@del "..\..\pilotlight\out\*.obj"  > nul 2> nul
-
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~ pl_planet_ext | release ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/pl_planet_ext.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../extensions/pl_planet_ext.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -212,12 +179,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 xcopy /Y /I "../../vcpkg_installed/x64-windows\bin\*.dll" "../../pilotlight/out\"
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=libxml2.lib libcurl.lib
-@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/edge.c" "../../src/geo.c" "../../src/geojson.c" "../../src/pixelstream/mjpeg.c" "../../src/pixelstream/shmem.c" "../../src/sock.c" "../../src/trick.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp/dcapp.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=libxml2.lib libcurl.lib 
+@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/edge.c" "../../src/geo.c" "../../src/geojson.c" "../../src/pixelstream/mjpeg.c" "../../src/pixelstream/shmem.c" "../../src/sock.c" "../../src/trick.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp/dcapp.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -246,12 +213,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-genheader | release ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=libxml2.lib
-@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_genheader.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=libxml2.lib 
+@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_genheader.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -282,12 +249,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-validate | release ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=libxml2.lib
-@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_validate.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=libxml2.lib 
+@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_validate.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -318,12 +285,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | release ~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=gdal.lib
-@set PL_SOURCES="../../apps/dcapp_planet_chunkgen.c" "../../src/utils/file.c" "../../src/utils/log.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=gdal.lib 
+@set PL_SOURCES="../../apps/dcapp_planet_chunkgen.c" "../../src/utils/file.c" "../../src/utils/log.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -350,13 +317,46 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
+::~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-validate | release ~~~~~~~~~~~~~~~~~~~~~~~~
+
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../apps/dcapp_planet_validate.c" 
+
+:: run compiler (and linker)
+@echo.
+@echo [1m[93mStep: dcapp-planet-validate[0m
+@echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
+@echo [1m[36mCompiling and Linking...[0m
+cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-validate.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-validate_%random%.pdb" %PL_LINK_DIRECTORIES%
+
+:: check build status
+@set PL_BUILD_STATUS=%ERRORLEVEL%
+
+:: failed
+@if %PL_BUILD_STATUS% NEQ 0 (
+    @echo [1m[91mCompilation Failed with error code[0m: %PL_BUILD_STATUS%
+    @set PL_RESULT=[1m[91mFailed.[0m
+    goto Cleanuprelease
+)
+
+:: print results
+@echo [36mResult: [0m %PL_RESULT%
+@echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
+
+:Exit_dcapp-planet-validate
+
+@del "..\..\pilotlight\out\*.obj"  > nul 2> nul
+
 ::~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-snapshot | release ~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../apps/dcapp_planet_snapshot.c" "../../src/geo.c" "../../src/utils/file.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -O2 -MD -DNDEBUG 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../apps/dcapp_planet_snapshot.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -413,8 +413,6 @@ goto ExitLabel
 @if exist "../../pilotlight/out/dc_draw_ext_*.pdb" del "..\..\pilotlight\out\dc_draw_ext_*.pdb"
 @if exist "../../pilotlight/out/dc_draw_backend_ext.dll" del "..\..\pilotlight\out\dc_draw_backend_ext.dll"
 @if exist "../../pilotlight/out/dc_draw_backend_ext_*.pdb" del "..\..\pilotlight\out\dc_draw_backend_ext_*.pdb"
-@if exist "../../pilotlight/out/pl_planet_processor_ext.dll" del "..\..\pilotlight\out\pl_planet_processor_ext.dll"
-@if exist "../../pilotlight/out/pl_planet_processor_ext_*.pdb" del "..\..\pilotlight\out\pl_planet_processor_ext_*.pdb"
 @if exist "../../pilotlight/out/pl_planet_ext.dll" del "..\..\pilotlight\out\pl_planet_ext.dll"
 @if exist "../../pilotlight/out/pl_planet_ext_*.pdb" del "..\..\pilotlight\out\pl_planet_ext_*.pdb"
 @if exist "../../pilotlight/out/dcapp.dll" del "..\..\pilotlight\out\dcapp.dll"
@@ -425,16 +423,18 @@ goto ExitLabel
 @if exist "../../pilotlight/out/dcapp-validate_*.pdb" del "..\..\pilotlight\out\dcapp-validate_*.pdb"
 @if exist "../../pilotlight/out/dcapp-planet-chunkgen.dll" del "..\..\pilotlight\out\dcapp-planet-chunkgen.dll"
 @if exist "../../pilotlight/out/dcapp-planet-chunkgen_*.pdb" del "..\..\pilotlight\out\dcapp-planet-chunkgen_*.pdb"
+@if exist "../../pilotlight/out/dcapp-planet-validate.dll" del "..\..\pilotlight\out\dcapp-planet-validate.dll"
+@if exist "../../pilotlight/out/dcapp-planet-validate_*.pdb" del "..\..\pilotlight\out\dcapp-planet-validate_*.pdb"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot.dll" del "..\..\pilotlight\out\dcapp-planet-snapshot.dll"
 @if exist "../../pilotlight/out/dcapp-planet-snapshot_*.pdb" del "..\..\pilotlight\out\dcapp-planet-snapshot_*.pdb"
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ dc_draw_ext | debug ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/dc_draw_ext.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../extensions/dc_draw_ext.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -463,11 +463,11 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~ dc_draw_backend_ext | debug ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/dc_draw_backend_ext.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../extensions/dc_draw_backend_ext.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -494,46 +494,13 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
-::~~~~~~~~~~~~~~~~~~~~~~~ pl_planet_processor_ext | debug ~~~~~~~~~~~~~~~~~~~~~~~~
-
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/pl_planet_processor_ext.c"
-
-:: run compiler (and linker)
-@echo.
-@echo [1m[93mStep: pl_planet_processor_ext[0m
-@echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
-@echo [1m[36mCompiling and Linking...[0m
-cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/pl_planet_processor_ext.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/pl_planet_processor_ext_%random%.pdb" %PL_LINK_DIRECTORIES%
-
-:: check build status
-@set PL_BUILD_STATUS=%ERRORLEVEL%
-
-:: failed
-@if %PL_BUILD_STATUS% NEQ 0 (
-    @echo [1m[91mCompilation Failed with error code[0m: %PL_BUILD_STATUS%
-    @set PL_RESULT=[1m[91mFailed.[0m
-    goto Cleanupdebug
-)
-
-:: print results
-@echo [36mResult: [0m %PL_RESULT%
-@echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
-
-:Exit_pl_planet_processor_ext
-
-@del "..\..\pilotlight\out\*.obj"  > nul 2> nul
-
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~~ pl_planet_ext | debug ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../extensions/pl_planet_ext.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../extensions/pl_planet_ext.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -564,12 +531,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 xcopy /Y /I "../../vcpkg_installed/x64-windows\bin\*.dll" "../../pilotlight/out\"
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=dearimguid.lib libxml2.lib libcurl.lib
-@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/edge.c" "../../src/geo.c" "../../src/geojson.c" "../../src/pixelstream/mjpeg.c" "../../src/pixelstream/shmem.c" "../../src/sock.c" "../../src/trick.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp/dcapp.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=dearimguid.lib libxml2.lib libcurl.lib 
+@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/edge.c" "../../src/geo.c" "../../src/geojson.c" "../../src/pixelstream/mjpeg.c" "../../src/pixelstream/shmem.c" "../../src/sock.c" "../../src/trick.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp/dcapp.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -598,12 +565,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-genheader | debug ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=libxml2.lib
-@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_genheader.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=libxml2.lib 
+@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_genheader.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -634,12 +601,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-validate | debug ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=libxml2.lib
-@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_validate.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" -I"../../vcpkg_installed/x64-windows/include/libxml2" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=libxml2.lib 
+@set PL_SOURCES="../../src/app/config.c" "../../src/app/elem.c" "../../src/app/lookup.c" "../../src/utils/env.c" "../../src/utils/file.c" "../../src/utils/library.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c" "../../src/utils/time.c" "../../src/value.c" "../../apps/dcapp_validate.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -670,12 +637,12 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 ::~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-chunkgen | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_STATIC_LINK_LIBRARIES=gdal.lib
-@set PL_SOURCES="../../apps/dcapp_planet_chunkgen.c" "../../src/utils/file.c" "../../src/utils/log.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_STATIC_LINK_LIBRARIES=gdal.lib 
+@set PL_SOURCES="../../apps/dcapp_planet_chunkgen.c" "../../src/utils/file.c" "../../src/utils/log.c" 
 
 :: run compiler (and linker)
 @echo.
@@ -702,13 +669,46 @@ cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotligh
 
 @del "..\..\pilotlight\out\*.obj"  > nul 2> nul
 
+::~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-validate | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../apps/dcapp_planet_validate.c" 
+
+:: run compiler (and linker)
+@echo.
+@echo [1m[93mStep: dcapp-planet-validate[0m
+@echo [1m[93m~~~~~~~~~~~~~~~~~~~~~~[0m
+@echo [1m[36mCompiling and Linking...[0m
+cl %PL_INCLUDE_DIRECTORIES% %PL_COMPILER_FLAGS% %PL_SOURCES% -Fe"../../pilotlight/out/dcapp-planet-validate.dll" -Fo"../../pilotlight/out/" -LD -link %PL_LINKER_FLAGS% -PDB:"../../pilotlight/out/dcapp-planet-validate_%random%.pdb" %PL_LINK_DIRECTORIES%
+
+:: check build status
+@set PL_BUILD_STATUS=%ERRORLEVEL%
+
+:: failed
+@if %PL_BUILD_STATUS% NEQ 0 (
+    @echo [1m[91mCompilation Failed with error code[0m: %PL_BUILD_STATUS%
+    @set PL_RESULT=[1m[91mFailed.[0m
+    goto Cleanupdebug
+)
+
+:: print results
+@echo [36mResult: [0m %PL_RESULT%
+@echo [36m~~~~~~~~~~~~~~~~~~~~~~[0m
+
+:Exit_dcapp-planet-validate
+
+@del "..\..\pilotlight\out\*.obj"  > nul 2> nul
+
 ::~~~~~~~~~~~~~~~~~~~~~~~~ dcapp-planet-snapshot | debug ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include"
-@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib"
-@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi
-@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp
-@set PL_SOURCES="../../apps/dcapp_planet_snapshot.c" "../../src/geo.c" "../../src/utils/file.c" "../../src/utils/log.c" "../../src/utils/math.c" "../../src/utils/string.c"
+@set PL_INCLUDE_DIRECTORIES=-I"../../src" -I"../../extensions" -I"../../shaders" -I"../../pilotlight/src" -I"../../pilotlight/libs" -I"../../pilotlight/extensions" -I"../../pilotlight/shaders" -I"../../pilotlight/dependencies/stb" -I"../../vcpkg_installed/x64-windows/include" 
+@set PL_LINK_DIRECTORIES=-LIBPATH:"../../pilotlight/out" -LIBPATH:"../../vcpkg_installed/x64-windows/lib" 
+@set PL_COMPILER_FLAGS=-Zc:preprocessor -nologo -W4 -WX -wd4201 -wd4100 -wd4996 -wd4505 -wd4189 -wd5105 -wd4115 -Od -MDd -Zi 
+@set PL_LINKER_FLAGS=-noimplib -noexp -incremental:no -nologo -noimplib -noexp 
+@set PL_SOURCES="../../apps/dcapp_planet_snapshot.c" 
 
 :: run compiler (and linker)
 @echo.

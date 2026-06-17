@@ -18,6 +18,16 @@ set "LBL_URL=https://imbrium.mit.edu/DATA/LOLA_GDR/POLAR/IMG/LDEM_45S_400M.LBL"
 set "IMG_FILE=%SOURCE_DIR%\LDEM_45S_400M.IMG"
 set "LBL_FILE=%SOURCE_DIR%\LDEM_45S_400M.LBL"
 set "PLANET_JSON=%CHUNK_DIR%\LDEM_45S_400M.planet.json"
+if "%DCAPP_PLANET_TILE_SIZE%"=="" (
+    set "PLANET_TILE_SIZE=257"
+) else (
+    set "PLANET_TILE_SIZE=%DCAPP_PLANET_TILE_SIZE%"
+)
+if "%DCAPP_PLANET_MAX_LOD%"=="" (
+    set "PLANET_MAX_LOD=5"
+) else (
+    set "PLANET_MAX_LOD=%DCAPP_PLANET_MAX_LOD%"
+)
 set "FORCE=0"
 set "EXTRA_ARGS="
 
@@ -41,6 +51,10 @@ echo.
 echo Environment:
 echo   DCAPP_PLANET_DATA_DIR  Override output directory
 echo                          default: data
+echo   DCAPP_PLANET_TILE_SIZE Override generated chunk tile size
+echo                          default: 257
+echo   DCAPP_PLANET_MAX_LOD   Override generated max LOD
+echo                          default: 5
 echo.
 echo Options:
 echo   --force                Regenerate chunks even if the .planet.json exists
@@ -81,7 +95,8 @@ goto done
 :run_chunkgen
 echo.
 echo Running chunkgen...
-call "%DCAPP_HOME%\bin\dcapp-planet-chunkgen.bat" "%LBL_FILE%" "%CHUNK_DIR%" --radius 1737400%EXTRA_ARGS%
+if "%FORCE%"=="1" del /q "%CHUNK_DIR%\LDEM_45S_400M_f*_l*.p2c" 2>nul
+call "%DCAPP_HOME%\bin\dcapp-planet-chunkgen.bat" "%CHUNK_DIR%" "%LBL_FILE%" --radius 1737400 --prefix LDEM_45S_400M --tile-size %PLANET_TILE_SIZE% --max-lod %PLANET_MAX_LOD%%EXTRA_ARGS%
 if errorlevel 1 exit /b 1
 
 :done

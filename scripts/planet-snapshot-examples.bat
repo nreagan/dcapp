@@ -12,9 +12,9 @@ if "%~1"=="3" set "EXAMPLE=3"
 if defined EXAMPLE goto checkdata
 
 echo Usage: %~nx0 1^|2^|3
-echo   1  geodetic Clavius
-echo   2  geodetic Shackleton with elevation shader
-echo   3  cartesian Clavius oblique
+echo   1  default manifest view
+echo   2  tile debug view
+echo   3  oblique Cartesian view
 exit /b 1
 
 :checkdata
@@ -32,37 +32,27 @@ if "%EXAMPLE%"=="3" goto example3
 
 :example1
 call "%SNAPSHOT%" ^
-    --planet-data "%PLANET_DATA%" ^
-    --crs geodetic ^
-    --attitude-frame local-ned ^
-    --lat -58.62 --lon 345.27 --elevation 2000000 ^
-    --yaw 0 --pitch 0 --roll 0 ^
+    "%PLANET_DATA%" ^
     --width 1280 --height 720 ^
     --fov 60 ^
-    --output "%OUT_DIR%\clavius-geodetic.png"
+    --output "%OUT_DIR%\planet-default.png"
 exit /b %errorlevel%
 
 :example2
 call "%SNAPSHOT%" ^
-    --planet-data "%PLANET_DATA%" ^
-    --crs geodetic ^
-    --attitude-frame local-ned ^
-    --lat -89.67 --lon 129.78 --elevation 1400000 ^
-    --yaw 0 --pitch 0 --roll 0 ^
+    "%PLANET_DATA%" ^
     --width 1024 --height 1024 ^
     --fov 55 ^
-    --fragment-shader "%DCAPP_HOME%\samples\planet\shaders\planet_elevation.frag" ^
-    --output "%OUT_DIR%\shackleton-elevation.png"
+    --show-tiles ^
+    --output "%OUT_DIR%\planet-tiles.png"
 exit /b %errorlevel%
 
 :example3
 call "%SNAPSHOT%" ^
-    --planet-data "%PLANET_DATA%" ^
-    --crs cartesian ^
-    --attitude-frame cartesian-rpy ^
-    --x -494826 --y -3190740 --z 1882148 ^
-    --roll 0 --pitch 52 --yaw 158 ^
+    "%PLANET_DATA%" ^
+    --eye -494826 -3190740 1882148 ^
+    --target 0 0 0 ^
     --width 1280 --height 720 ^
     --fov 60 ^
-    --output "%OUT_DIR%\cartesian-oblique.png"
+    --output "%OUT_DIR%\planet-oblique.png"
 exit /b %errorlevel%

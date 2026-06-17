@@ -2,37 +2,20 @@
 ------------------------------------------------------------------------------
 pl_planet_ext.c
 
-Planet rendering + streaming extension.
-
-Responsibilities:
-- GPU-managed hierarchical LOD planet rendering
-- Chunk residency & LRU eviction
-- Bindless texture management
-- View-based rendering with hysteresis refinement
-
-This file intentionally couples:
-- CPU-side planet streaming
-- GPU resource allocation
-- Runtime LOD decisions
-
-NOTE:
-- Logic must remain unchanged.
-- Any modifications here should preserve streaming behavior invariants.
+Canonical planet terrain contract:
+- global cube-sphere tile addresses: face/lod/x/y
+- sparse tile manifests with parent fallback
+- DEM source catalog with footprint, priority, and native resolution
+- source-choice helpers for multi-DEM chunk generation
 ------------------------------------------------------------------------------
 */
 
 /*
-Index:
+Index of this file:
 // [SECTION] includes
-// [SECTION] defines
-// [SECTION] forward declarations
-// [SECTION] global data
-// [SECTION] structs
-// [SECTION] internal helpers (preprocessing)
-// [SECTION] internal helpers (rendering)
-// [SECTION] public api
-// [SECTION] planet view api
-// [SECTION] internal api implementation
+// [SECTION] globals
+// [SECTION] internal helpers
+// [SECTION] public api implementation
 // [SECTION] extension loading
 // [SECTION] unity build
 */
@@ -41,266 +24,407 @@ Index:
 // [SECTION] includes
 //-----------------------------------------------------------------------------
 
-#include <stdio.h>
 #include <float.h>
+#include <math.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include "pl.h"
-#include "pl_planet_ext.h"
+#include <string.h>
 
-// libs
+#include "pl.h"
 #define PL_MATH_INCLUDE_FUNCTIONS
 #include "pl_math.h"
 #undef pl_vnsprintf
 #include "pl_memory.h"
-#include "pl_string.h"
 
-// stable extensions
-#include "pl_platform_ext.h"
-#include "pl_image_ext.h"
-#include "pl_profile_ext.h"
+#include "pl_planet_ext.h"
+
 #include "pl_graphics_ext.h"
-#include "pl_gpu_allocators_ext.h"
-#include "pl_starter_ext.h"
 #include "pl_shader_ext.h"
-#include "pl_screen_log_ext.h"
 #include "pl_draw_ext.h"
-#include "pl_vfs_ext.h"
-#include "pl_stats_ext.h"
-
-// unstable extensions
-#include "pl_collision_ext.h"
-#include "pl_freelist_ext.h"
 #include "pl_camera_ext.h"
-#include "pl_planet_processor_ext.h"
-#include "pl_image_ops_ext.h"
-#include "pl_resource_ext.h"
 
-// shader interop
 #include "pl_shader_interop_planet.h"
 
-//-----------------------------------------------------------------------------
-// [SECTION] defines
-//-----------------------------------------------------------------------------
-
-#define PL_REQUEST_QUEUE_SIZE 100
+#define PL_JSON_IMPLEMENTATION
+#include "pl_json.h"
 
 //-----------------------------------------------------------------------------
-// [SECTION] forward declarations
+// [SECTION] globals
 //-----------------------------------------------------------------------------
 
-// basic types
-typedef struct _plPlanetResidencyNode   plPlanetResidencyNode;
-typedef struct _plPlanetReplacementNode plPlanetReplacementNode;
-typedef struct _plPlanetContext plPlanetContext;
+static const plMemoryI* gptMemory = NULL;
+static const plGraphicsI* gptGfx = NULL;
+static const plShaderI* gptShader = NULL;
+static const plDrawI* gptDraw = NULL;
 
-//-----------------------------------------------------------------------------
-// [SECTION] global data
-//-----------------------------------------------------------------------------
-
-
-static const plMemoryI*  gptMemory = NULL;
 #define PL_ALLOC(x)      gptMemory->tracked_realloc(NULL, (x), __FILE__, __LINE__)
 #define PL_REALLOC(x, y) gptMemory->tracked_realloc((x), (y), __FILE__, __LINE__)
 #define PL_FREE(x)       gptMemory->tracked_realloc((x), 0, __FILE__, __LINE__)
 
-#define PL_DS_ALLOC(x)                      gptMemory->tracked_realloc(NULL, (x), __FILE__, __LINE__)
-#define PL_DS_ALLOC_INDIRECT(x, FILE, LINE) gptMemory->tracked_realloc(NULL, (x), FILE, LINE)
-#define PL_DS_FREE(x)                       gptMemory->tracked_realloc((x), 0, __FILE__, __LINE__)
+#define PL_PLANET_PATH_MAX 512
 
-// required APIs
-static const plImageI*            gptImage            = NULL;
-static const plFileI*             gptFile             = NULL;
-static const plProfileI*          gptProfile          = NULL;
-static const plGraphicsI*         gptGfx              = NULL;
-static const plFreeListI*         gptFreeList         = NULL;
-static const plIOI*               gptIOI              = NULL;
-static const plShaderI*           gptShader           = NULL;
-static const plStarterI*          gptStarter          = NULL;
-static const plCollisionI*        gptCollision        = NULL;
-static const plScreenLogI*        gptScreenLog        = NULL;
-static const plDrawI*             gptDraw             = NULL;
-static const plPlanetProcessorI*  gptTerrainProcessor = NULL;
-static const plGPUAllocatorsI*    gptGpuAllocators    = NULL;
-static const plImageOpsI*         gptImageOps         = NULL;
-static const plVfsI*              gptVfs              = NULL;
-static const plResourceI*         gptResource         = NULL;
-static const plStatsI*            gptStats            = NULL;
-
-
-#include "pl_ds.h"
-
-// context
-static plPlanetContext* gptCtx = NULL;
-
-//-----------------------------------------------------------------------------
-// [SECTION] structs
-//-----------------------------------------------------------------------------
-
-// Linked list node for chunk residency requests (CPU-side streaming)
-typedef struct _plPlanetResidencyNode plPlanetResidencyNode;
-typedef struct _plPlanetResidencyNode
+typedef struct _plPlanetManifest
 {
-    plPlanetResidencyNode* ptNext;
-    plPlanetResidencyNode* ptPrev;
+    plPlanetManifestInit tInit;
 
-    // Chunk requested for residency
-    plPlanetChunk* ptChunk;
+    plPlanetSourceRecord* atSources;
+    uint32_t               uSourceCount;
+    uint32_t               uSourceCapacity;
 
-    // Frame index when request was made (for prioritization)
-    uint64_t uFrameRequested;
-} plPlanetResidencyNode;
+    plPlanetTileRecord* atTiles;
+    uint32_t             uTileCount;
+    uint32_t             uTileCapacity;
 
+    char acManifestPath[PL_PLANET_PATH_MAX];
+    char acBasePath[PL_PLANET_PATH_MAX];
+    char acPayloadFormat[16];
+    char acHeightMode[16];
+    bool bPayloads;
+    bool bFinalized;
+} plPlanetManifest;
 
-typedef struct _plOBB2
+typedef struct _plPlanetGpuTile
 {
-    plVec3 tCenter;
-    plVec3 tExtents;
-    plVec3 atAxes[3]; // Orthonormal basis
-} plOBB2;
-
-typedef struct _plChunkFileData
-{
-    plPlanetChunkFile tFile;
-    char              acPakFileName[256];
-    plResourceHandle  tTextureResource;
-    uint32_t          uTextureIndex;
-} plChunkFileData;
+    plPlanetTileRecord  tTile;
+    plPlanetChunkHeader tHeader;
+    uint32_t             uVertexStart;
+    uint32_t             uIndexStart;
+    uint32_t             uIndexCount;
+    uint32_t             uCacheSlot;
+    uint64_t             ulLastUsedFrame;
+    bool                 bResident;
+} plPlanetGpuTile;
 
 typedef struct _plPlanet
 {
-    plPlanetRuntimeOptions tRuntimeOptions;
-    plChunkFileData* sbtChunkFiles;
-    double           dRadius;
-    plPlanetProcessInfo tInfo;
-    plVec2           tTopLeftGlobal;
-    uint32_t                 uTileCount;
-    plPlanetProcessTileInfo* atTiles;
-    size_t szVertexSize;
+    plPlanetManifest*       ptManifest;
+    plPlanetRuntimeOptions  tRuntimeOptions;
+    plPlanetRenderStats     tStats;
 
-
-
-    plPlanetResidencyNode tRequestQueue;
-    plPlanetResidencyNode atRequests[PL_REQUEST_QUEUE_SIZE];
-    uint32_t*             sbuFreeRequests;
-
-    plPlanetChunk tReplacementQueue;
-
-    plBufferHandle tIndexBuffer;
-    plFreeList tIndexBufferManager;
+    plPlanetGpuTile* atGpuTiles;
+    uint32_t          uGpuTileCount;
+    int32_t*          aiTileIndexBySlot;
+    uint32_t          uResidentCapacity;
+    uint32_t          uResidentCount;
+    uint64_t          ulFrameCounter;
+    size_t            szSlotVertexBytes;
+    size_t            szSlotIndexBytes;
 
     plBufferHandle tVertexBuffer;
-    plFreeList tVertexBufferManager;
+    plBufferHandle tIndexBuffer;
 } plPlanet;
 
 typedef struct _plPlanetView
 {
+    plPlanet* ptPlanet;
     plPlanetViewRuntimeOptions tRuntimeOptions;
-    plPlanet*          ptPlanet;
+
     plRenderPassHandle tRenderPass;
     plTextureHandle    tOutputTexture;
     plTextureHandle    tOutputTextureDepth;
     plBindGroupHandle  tOutputTextureHandle;
-    uint32_t           uOutputWidth;
-    uint32_t           uOutputHeight;
-    plDrawList3D*      pt3dDrawlist;
 
-    // shaders
+    uint32_t uOutputWidth;
+    uint32_t uOutputHeight;
+
     plShaderHandle tShader;
     plShaderHandle tWireframeShader;
-    plShaderHandle tShaderDouble;
-    plShaderHandle tWireframeShaderDouble;
-    const char* pcVertexShader;
-    const char* pcFragmentShader;
+    const char*    pcVertexShader;
+    const char*    pcFragmentShader;
 } plPlanetView;
 
 typedef struct _plPlanetContext
 {
     plDevice*                ptDevice;
     plRenderPassLayoutHandle tRenderPassLayout;
-    plBindGroupPool*         ptBindGroupPool;
     plDynamicDataBlock       tCurrentDynamicBufferBlock;
-
-    // gpu allocators
-    plDeviceMemoryAllocatorI* tLocalDedicatedAllocator;
-    plDeviceMemoryAllocatorI* tLocalBuddyAllocator;
-
-    // samplers
-    plSamplerHandle tSampler;
-    plTextureHandle tDummyTexture;
-    uint32_t        uDummyIndex;
-
-    // bindless texture system
-    uint32_t          uTextureIndexCount;
-    plHashMap64       tTextureIndexHashmap; // texture handle <-> index
-    plBindGroupHandle atBindGroups[PL_MAX_FRAMES_IN_FLIGHT];
-
-    char* sbcScratchBuffer;
-    char* sbcScratchBuffer2;
-    plTempAllocator tTempAllocator;
-
-    plBufferHandle tStagingBuffer;
-    uint32_t       uStagingBufferSize;
-    double*        pdDrawCalls;
-
-
+    uint32_t                 uStagingBufferSize;
+    uint32_t                 uGpuCacheSize;
 } plPlanetContext;
 
+static plPlanetContext* gptCtx = NULL;
+
 //-----------------------------------------------------------------------------
-// [SECTION] internal helpers (rendering)
+// [SECTION] internal helpers
 //-----------------------------------------------------------------------------
 
-void pl_planet_load_shaders(plPlanetView* ptPlanet);
-
-// rendering
-static void pl__handle_residency (plPlanet*, plCommandBuffer*);
-static void pl__request_residency(plPlanet*, plPlanetChunk*);
-static void pl__touch_chunk(plPlanet*, plPlanetChunk*);
-static void pl__make_unresident  (plPlanet*, plPlanetChunk*);
-static bool pl__planet_load(plPlanet* ptPlanet, plPlanetProcessInfo* ptInfo, plPlanetLoadFlags tFlags);
-void pl__remove_from_replacement_queue(plPlanet* ptPlanet, plPlanetChunk* ptChunk);
-
-static void pl__render_chunk(plPlanetView*, plCamera*, plRenderEncoder*, plPlanetChunk*, plPlanetChunkFile*, const plMat4* ptMVP);
-static bool pl__sat_visibility_test(plCamera*, const plAABB*);
-
-static void pl__free_chunk(plPlanet* ptPlanet, uint64_t);
-
-static void pl__free_chunk_until(plPlanet* P, uint64_t idx_bytes_needed, uint64_t vtx_bytes_needed);
-
-static plTextureHandle pl__planet_create_texture(plCommandBuffer* ptCmdBuffer, const plTextureDesc* ptDesc, const char* pcName);
-static plTextureHandle pl__planet_create_texture_with_data (const plTextureDesc*, const char* pcName, uint32_t uIdentifier, const void*, size_t);
-static uint32_t pl__planet_get_bindless_texture_index(plTextureHandle tTexture);
-static void pl__planet_return_bindless_texture_index(plTextureHandle tTexture);
-
-static inline bool pl__is_leaf_resident(const plPlanetChunk* c)
+static double
+pl__planet_clamp(double x, double lo, double hi)
 {
-    if (!c->aptChildren[0]) return true; // no children in tree
-    return !(c->aptChildren[0]->ptIndexHole ||
-             c->aptChildren[1]->ptIndexHole ||
-             c->aptChildren[2]->ptIndexHole ||
-             c->aptChildren[3]->ptIndexHole);
+    return x < lo ? lo : (x > hi ? hi : x);
+}
+
+static double
+pl__planet_absd(double x)
+{
+    return x < 0.0 ? -x : x;
+}
+
+static double
+pl__planet_normalize_lon(double lon)
+{
+    double out = fmod(lon, 360.0);
+    if(out < 0.0)
+        out += 360.0;
+    return out;
+}
+
+static bool
+pl__planet_source_contains(const plPlanetSourceRecord* source, double latitude, double longitude)
+{
+    if(!source)
+        return false;
+
+    if(latitude < source->dMinLatitude || latitude > source->dMaxLatitude)
+        return false;
+
+    if((source->tFlags & PL_PLANET_SOURCE_FLAGS_GLOBAL_LONGITUDE) != 0)
+        return true;
+
+    const double lon = pl__planet_normalize_lon(longitude);
+    const double minLon = pl__planet_normalize_lon(source->dMinLongitude);
+    const double maxLon = pl__planet_normalize_lon(source->dMaxLongitude);
+
+    if(minLon <= maxLon)
+        return lon >= minLon && lon <= maxLon;
+
+    // Antimeridian/seam-crossing footprint.
+    return lon >= minLon || lon <= maxLon;
+}
+
+static bool
+pl__planet_valid_address(plPlanetTileAddress address)
+{
+    if(address.tFace < 0 || address.tFace >= PL_PLANET_FACE_COUNT)
+        return false;
+    if(address.uLod >= 32)
+        return false;
+
+    const uint32_t dim = 1u << address.uLod;
+    return address.uX < dim && address.uY < dim;
+}
+
+static int
+pl__planet_compare_address(plPlanetTileAddress a, plPlanetTileAddress b)
+{
+    if(a.tFace != b.tFace)
+        return a.tFace < b.tFace ? -1 : 1;
+    if(a.uLod != b.uLod)
+        return a.uLod < b.uLod ? -1 : 1;
+    if(a.uY != b.uY)
+        return a.uY < b.uY ? -1 : 1;
+    if(a.uX != b.uX)
+        return a.uX < b.uX ? -1 : 1;
+    return 0;
+}
+
+static int
+pl__planet_compare_tile_records(const void* a, const void* b)
+{
+    const plPlanetTileRecord* ta = (const plPlanetTileRecord*)a;
+    const plPlanetTileRecord* tb = (const plPlanetTileRecord*)b;
+    return pl__planet_compare_address(ta->tAddress, tb->tAddress);
+}
+
+static bool
+pl__planet_reserve_sources(plPlanetManifest* manifest, uint32_t needed)
+{
+    if(needed <= manifest->uSourceCapacity)
+        return true;
+
+    uint32_t newCapacity = manifest->uSourceCapacity ? manifest->uSourceCapacity * 2u : 8u;
+    while(newCapacity < needed)
+        newCapacity *= 2u;
+
+    plPlanetSourceRecord* newSources = (plPlanetSourceRecord*)PL_REALLOC(
+        manifest->atSources,
+        (size_t)newCapacity * sizeof(plPlanetSourceRecord));
+    if(!newSources)
+        return false;
+
+    manifest->atSources = newSources;
+    manifest->uSourceCapacity = newCapacity;
+    return true;
+}
+
+static bool
+pl__planet_reserve_tiles(plPlanetManifest* manifest, uint32_t needed)
+{
+    if(needed <= manifest->uTileCapacity)
+        return true;
+
+    uint32_t newCapacity = manifest->uTileCapacity ? manifest->uTileCapacity * 2u : 64u;
+    while(newCapacity < needed)
+        newCapacity *= 2u;
+
+    plPlanetTileRecord* newTiles = (plPlanetTileRecord*)PL_REALLOC(
+        manifest->atTiles,
+        (size_t)newCapacity * sizeof(plPlanetTileRecord));
+    if(!newTiles)
+        return false;
+
+    manifest->atTiles = newTiles;
+    manifest->uTileCapacity = newCapacity;
+    return true;
+}
+
+static plVec3d
+pl__planet_norm_vec3d(plVec3d v)
+{
+    const double len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if(len <= DBL_EPSILON)
+        return (plVec3d){0.0, 0.0, 1.0};
+    return (plVec3d){v.x / len, v.y / len, v.z / len};
+}
+
+static bool
+pl__planet_is_absolute_path(const char* path)
+{
+    if(!path || path[0] == '\0')
+        return false;
+    if(path[0] == '/')
+        return true;
+#ifdef _WIN32
+    if((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
+        return path[1] == ':';
+    if(path[0] == '\\' && path[1] == '\\')
+        return true;
+#endif
+    return false;
 }
 
 static void
-pl__planet_split_double(double dValue, float* ptHighOut, float* ptLowOut)
+pl__planet_copy_string(char* dst, uint32_t dstSize, const char* src)
 {
-    *ptHighOut = (float)dValue;
-    *ptLowOut = (float)(dValue - *ptHighOut);
+    if(!dst || dstSize == 0)
+        return;
+    dst[0] = '\0';
+    if(!src)
+        return;
+    snprintf(dst, dstSize, "%s", src);
+}
+
+static void
+pl__planet_dirname(const char* path, char* outDir, uint32_t outDirSize)
+{
+    if(!outDir || outDirSize == 0)
+        return;
+    outDir[0] = '\0';
+    if(!path || path[0] == '\0')
+    {
+        snprintf(outDir, outDirSize, ".");
+        return;
+    }
+
+    const char* slash = strrchr(path, '/');
+#ifdef _WIN32
+    const char* backslash = strrchr(path, '\\');
+    if(!slash || (backslash && backslash > slash))
+        slash = backslash;
+#endif
+    if(!slash)
+    {
+        snprintf(outDir, outDirSize, ".");
+        return;
+    }
+
+    const size_t len = (size_t)(slash - path);
+    if(len == 0)
+    {
+        snprintf(outDir, outDirSize, "/");
+        return;
+    }
+
+    const size_t copyLen = len < (size_t)(outDirSize - 1u) ? len : (size_t)(outDirSize - 1u);
+    memcpy(outDir, path, copyLen);
+    outDir[copyLen] = '\0';
+}
+
+static bool
+pl__planet_read_file_text(const char* path, char** outText)
+{
+    if(outText)
+        *outText = NULL;
+    if(!path || !outText)
+        return false;
+
+    FILE* file = fopen(path, "rb");
+    if(!file)
+        return false;
+
+    fseek(file, 0, SEEK_END);
+    const long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    if(size < 0)
+    {
+        fclose(file);
+        return false;
+    }
+
+    char* text = (char*)PL_ALLOC((size_t)size + 1u);
+    if(!text)
+    {
+        fclose(file);
+        return false;
+    }
+
+    const size_t readSize = fread(text, 1, (size_t)size, file);
+    fclose(file);
+    if(readSize != (size_t)size)
+    {
+        PL_FREE(text);
+        return false;
+    }
+
+    text[size] = '\0';
+    *outText = text;
+    return true;
+}
+
+static bool
+pl__planet_chunk_header_valid(const plPlanetChunkHeader* header)
+{
+    if(!header)
+        return false;
+    if(header->uMagic != PL_PLANET_CHUNK_MAGIC)
+        return false;
+    if(header->uVersionMajor != PL_PLANET_CHUNK_VERSION_MAJOR)
+        return false;
+    if(header->uHeaderSize < sizeof(plPlanetChunkHeader))
+        return false;
+    if(header->uVertexSize != sizeof(plPlanetVertex))
+        return false;
+    if(header->uVertexCount == 0 || header->uIndexCount == 0)
+        return false;
+    if(header->ulVertexDataOffset < header->uHeaderSize)
+        return false;
+    if(header->ulIndexDataOffset <= header->ulVertexDataOffset)
+        return false;
+    return true;
 }
 
 //-----------------------------------------------------------------------------
 // [SECTION] public api implementation
 //-----------------------------------------------------------------------------
 
-void
-pl_planet_initialize(plPlanetExtInit tInit)
+static void
+pl_planet_initialize(plPlanetExtInit init)
 {
-    gptCtx->ptDevice = tInit.ptDevice;
-    gptCtx->pdDrawCalls = gptStats->get_counter("planet draw calls");
+    if(!gptCtx)
+        return;
 
-    const plRenderPassLayoutDesc tRenderPassLayoutDesc = {
+    gptCtx->ptDevice = init.ptDevice;
+    gptCtx->uStagingBufferSize = init.uStagingBufferSize ? init.uStagingBufferSize : 67108864u;
+    gptCtx->uGpuCacheSize = init.uGpuCacheSize ? init.uGpuCacheSize : 536870912u;
+
+    if(!gptGfx || !gptCtx->ptDevice)
+        return;
+
+    const plRenderPassLayoutDesc renderPassLayoutDesc = {
         .atRenderTargets = {
-            { .tFormat = PL_FORMAT_D32_FLOAT_S8_UINT, .bDepth = true },  // depth buffer
-            { .tFormat = PL_FORMAT_R8G8B8A8_UNORM }, // final output
+            { .tFormat = PL_FORMAT_D32_FLOAT_S8_UINT, .bDepth = true },
+            { .tFormat = PL_FORMAT_R8G8B8A8_UNORM },
         },
         .atSubpasses = {
             {
@@ -327,2158 +451,1689 @@ pl_planet_initialize(plPlanetExtInit tInit)
             }
         }
     };
-    gptCtx->tRenderPassLayout = gptGfx->create_render_pass_layout(tInit.ptDevice, &tRenderPassLayoutDesc);
-
-    // create bind group pool
-    plBindGroupPoolDesc tBindGroupPoolDesc = {
-        .tFlags                   = PL_BIND_GROUP_POOL_FLAGS_NONE,
-        .szSamplerBindings        = 1,
-        .szSampledTextureBindings = PL_PLANET_MAX_BINDLESS_TEXTURES * 2,
-        .szStorageTextureBindings = 1,
-        .szStorageBufferBindings  = 1
-    };
-    gptCtx->ptBindGroupPool = gptGfx->create_bind_group_pool(tInit.ptDevice, &tBindGroupPoolDesc);
-
-    // retrieve GPU allocators
-    gptCtx->tLocalDedicatedAllocator   = gptGpuAllocators->get_local_dedicated_allocator(tInit.ptDevice);
-    gptCtx->tLocalBuddyAllocator       = gptGpuAllocators->get_local_buddy_allocator(tInit.ptDevice);
-
-    const plBindGroupLayoutDesc tBindGroupLayoutDesc = {
-        .atSamplerBindings = {
-            { .uSlot = 0, .tStages = PL_SHADER_STAGE_FRAGMENT}
-        },
-        .atTextureBindings = {
-            {.uSlot = 1, .tStages = PL_SHADER_STAGE_FRAGMENT, .tType = PL_TEXTURE_BINDING_TYPE_SAMPLED, .bNonUniformIndexing = true, .uDescriptorCount = PL_PLANET_MAX_BINDLESS_TEXTURES}
-        }
-    };
-    plBindGroupLayoutHandle tBindGroupLayout = gptGfx->create_bind_group_layout(tInit.ptDevice, &tBindGroupLayoutDesc);
-
-
-
-    const plSamplerDesc tSamplerDesc = {
-        .tMagFilter    = PL_FILTER_LINEAR,
-        .tMinFilter    = PL_FILTER_LINEAR,
-        .fMinMip       = 0.0f,
-        .fMaxMip       = 1.0f,
-        .tVAddressMode = PL_ADDRESS_MODE_CLAMP_TO_BORDER,
-        .tUAddressMode = PL_ADDRESS_MODE_CLAMP_TO_BORDER,
-        .tBorderColor = PL_BORDER_COLOR_INT_TRANSPARENT_BLACK,
-        .pcDebugName   = "sampler"
-    };
-    gptCtx->tSampler = gptGfx->create_sampler(tInit.ptDevice, &tSamplerDesc);
-
-
-
-    const plBindGroupUpdateSamplerData tSamplerData = {
-        .tSampler = gptCtx->tSampler,
-        .uSlot    = 0
-    };
-    const plBindGroupUpdateData tBGSet0Data = {
-        .uSamplerCount = 1,
-        .atSamplerBindings = &tSamplerData
-    };
-
-    for(uint32_t i = 0; i < gptGfx->get_frames_in_flight(); i++)
-    {
-        // create global bindgroup
-        const plBindGroupDesc tGlobalBindGroupDesc = {
-            .ptPool      = gptCtx->ptBindGroupPool,
-            .tLayout     = tBindGroupLayout,
-            .pcDebugName = "global bind group"
-        };
-        gptCtx->atBindGroups[i] = gptGfx->create_bind_group(tInit.ptDevice, &tGlobalBindGroupDesc);
-
-        gptGfx->update_bind_group(tInit.ptDevice, gptCtx->atBindGroups[i], &tBGSet0Data);
-    }
-
-    const plTextureDesc tDummyTextureDesc = {
-        .tDimensions   = {2, 2, 1},
-        .tFormat       = PL_FORMAT_R32G32B32A32_FLOAT,
-        .uLayers       = 1,
-        .uMips         = 1,
-        .tType         = PL_TEXTURE_TYPE_2D,
-        .tUsage        = PL_TEXTURE_USAGE_SAMPLED,
-        .pcDebugName   = "dummy"
-    };
-
-    const float afDummyTextureData[] = {
-        0.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 0.0f
-    };
-    gptCtx->tDummyTexture = pl__planet_create_texture_with_data(&tDummyTextureDesc, "dummy", 0, afDummyTextureData, sizeof(afDummyTextureData));
-    gptCtx->uDummyIndex = pl__planet_get_bindless_texture_index(gptCtx->tDummyTexture);
-
-    plDevice* ptDevice = gptCtx->ptDevice;
-
-    if(tInit.uStagingBufferSize == 0) tInit.uStagingBufferSize = 268435456;
-    gptCtx->uStagingBufferSize = tInit.uStagingBufferSize;
-
-    // create vertex buffer
-    const plBufferDesc tStagingBufferDesc = {
-        .tUsage      = PL_BUFFER_USAGE_TRANSFER_SOURCE,
-        .szByteSize  = gptCtx->uStagingBufferSize,
-        .pcDebugName = "cdlod staging buffer"
-    };
-    gptCtx->tStagingBuffer = gptGfx->create_buffer(ptDevice, &tStagingBufferDesc, NULL);
-
-    // retrieve buffer to get memory allocation requirements (do not store buffer pointer)
-    plBuffer* ptStagingBuffer = gptGfx->get_buffer(ptDevice, gptCtx->tStagingBuffer);
-
-    // allocate memory for the vertex buffer
-    const plDeviceMemoryAllocation tStagingBufferAllocation = gptGfx->allocate_memory(ptDevice,
-        ptStagingBuffer->tMemoryRequirements.ulSize,
-        PL_MEMORY_FLAGS_HOST_VISIBLE | PL_MEMORY_FLAGS_HOST_COHERENT,
-        ptStagingBuffer->tMemoryRequirements.uMemoryTypeBits,
-        "staging buffer memory");
-
-    // bind the buffer to the new memory allocation
-    gptGfx->bind_buffer_to_memory(ptDevice, gptCtx->tStagingBuffer, &tStagingBufferAllocation);
+    gptCtx->tRenderPassLayout = gptGfx->create_render_pass_layout(gptCtx->ptDevice, &renderPassLayoutDesc);
 }
 
-void
+static void
 pl_planet_cleanup(void)
 {
-    plDevice* ptDevice = gptCtx->ptDevice;
-
-    gptGfx->destroy_buffer(ptDevice, gptCtx->tStagingBuffer);
-
-    pl_sb_free(gptCtx->sbcScratchBuffer);
-    pl_sb_free(gptCtx->sbcScratchBuffer2);
-    pl_hm_free(&gptCtx->tTextureIndexHashmap);
-    pl_temp_allocator_free(&gptCtx->tTempAllocator);
-    gptGfx->cleanup_bind_group_pool(gptCtx->ptBindGroupPool);
-    gptGfx->destroy_render_pass_layout(gptCtx->ptDevice, gptCtx->tRenderPassLayout);
-    gptGpuAllocators->cleanup(gptCtx->ptDevice);
-}
-
-plPlanet*
-pl_create_planet(plCommandBuffer* ptCmdBuffer, plPlanetInit tInit, plPlanetProcessInfo* ptInfo)
-{
-    plPlanet* ptPlanet = PL_ALLOC(sizeof(plPlanet));
-    memset(ptPlanet, 0, sizeof(plPlanet));
-
-
-    ptPlanet->tInfo = *ptInfo;
-    ptPlanet->tInfo.atTiles = NULL;
-    ptPlanet->tRuntimeOptions.tLightDirection = (plVec3){-1.0f, -1.0f, -1.0f};
-    if(ptInfo->tFlags & PL_PLANET_PROCESSING_FLAGS_DOUBLE_PRECISION)
-        ptPlanet->szVertexSize = sizeof(plPlanetDoubleVertex);
-    else
-        ptPlanet->szVertexSize = sizeof(plPlanetVertex);
-
-    ptPlanet->dRadius = tInit.dRadius;
-
-    pl_sb_resize(ptPlanet->sbuFreeRequests, PL_REQUEST_QUEUE_SIZE);
-
-    for(uint32_t i = 0; i < PL_REQUEST_QUEUE_SIZE; i++)
-    {
-        ptPlanet->sbuFreeRequests[i] = i;
-    }
-
-    if(tInit.uIndexBufferSize == 0)   tInit.uIndexBufferSize = 268435456;
-    if(tInit.uVertexBufferSize == 0)  tInit.uVertexBufferSize = 268435456;
-
-
-    gptFreeList->create(tInit.uVertexBufferSize, 256, &ptPlanet->tVertexBufferManager);
-    gptFreeList->create(tInit.uIndexBufferSize, 256, &ptPlanet->tIndexBufferManager);
-
-    plDevice* ptDevice = gptCtx->ptDevice;
-
-    const plBufferDesc tVertexBufferDesc = {
-        .tUsage      = PL_BUFFER_USAGE_VERTEX | PL_BUFFER_USAGE_TRANSFER_DESTINATION,
-        .szByteSize  = ptPlanet->tVertexBufferManager.uSize,
-        .pcDebugName = "vertex buffer"
-    };
-    ptPlanet->tVertexBuffer = gptGfx->create_buffer(ptDevice, &tVertexBufferDesc, NULL);
-
-    // retrieve buffer to get memory allocation requirements (do not store buffer pointer)
-    plBuffer* ptVertexBuffer = gptGfx->get_buffer(ptDevice, ptPlanet->tVertexBuffer);
-
-    // allocate memory for the vertex buffer
-    const plDeviceMemoryAllocation tVertexBufferAllocation = gptGfx->allocate_memory(ptDevice,
-        ptVertexBuffer->tMemoryRequirements.ulSize,
-        PL_MEMORY_FLAGS_DEVICE_LOCAL,
-        ptVertexBuffer->tMemoryRequirements.uMemoryTypeBits,
-        "vertex buffer memory");
-
-    // bind the buffer to the new memory allocation
-    gptGfx->bind_buffer_to_memory(ptDevice, ptPlanet->tVertexBuffer, &tVertexBufferAllocation);
-
-    // create index buffer
-    const plBufferDesc tIndexBufferDesc = {
-        .tUsage      = PL_BUFFER_USAGE_INDEX | PL_BUFFER_USAGE_TRANSFER_DESTINATION,
-        .szByteSize  = ptPlanet->tIndexBufferManager.uSize,
-        .pcDebugName = "index buffer"
-    };
-    ptPlanet->tIndexBuffer = gptGfx->create_buffer(ptDevice, &tIndexBufferDesc, NULL);
-
-    // retrieve buffer to get memory allocation requirements (do not store buffer pointer)
-    plBuffer* ptIndexBuffer = gptGfx->get_buffer(ptDevice, ptPlanet->tIndexBuffer);
-
-    // allocate memory for the index buffer
-    const plDeviceMemoryAllocation tIndexBufferAllocation = gptGfx->allocate_memory(ptDevice,
-        ptIndexBuffer->tMemoryRequirements.ulSize,
-        PL_MEMORY_FLAGS_DEVICE_LOCAL,
-        ptIndexBuffer->tMemoryRequirements.uMemoryTypeBits,
-        "index buffer memory");
-
-    // bind the buffer to the new memory allocation
-    gptGfx->bind_buffer_to_memory(ptDevice, ptPlanet->tIndexBuffer, &tIndexBufferAllocation);
-
-    pl__planet_load(ptPlanet, ptInfo, tInit.tLoadFlags);
-    ptPlanet->atTiles = PL_ALLOC(sizeof(plPlanetProcessTileInfo) * ptInfo->uTileCount);
-    memset(ptPlanet->atTiles, 0, sizeof(plPlanetProcessTileInfo) * ptInfo->uTileCount);
-    memcpy(ptPlanet->atTiles, ptInfo->atTiles, sizeof(plPlanetProcessTileInfo) * ptInfo->uTileCount);
-    ptPlanet->uTileCount = ptInfo->uTileCount;
-
-    for(uint32_t i = 0; i < pl_sb_size(ptPlanet->sbtChunkFiles); i++)
-        pl__request_residency(ptPlanet, &ptPlanet->sbtChunkFiles[i].tFile.atChunks[0]);
-    return ptPlanet;
-}
-
-void
-pl_cleanup_planet(plPlanet* ptPlanet)
-{
-    plDevice* ptDevice = gptCtx->ptDevice;
-
-    for(uint32_t i = 0; i < pl_sb_size(ptPlanet->sbtChunkFiles); i++)
-    {
-        if(ptPlanet->sbtChunkFiles[i].uTextureIndex != 0 && gptResource->is_valid(ptPlanet->sbtChunkFiles[i].tTextureResource))
-        {
-            plTextureHandle tTexture = gptResource->get_texture(ptPlanet->sbtChunkFiles[i].tTextureResource);
-            pl__planet_return_bindless_texture_index(tTexture);
-            gptResource->evict(ptPlanet->sbtChunkFiles[i].tTextureResource);
-            gptResource->unload(ptPlanet->sbtChunkFiles[i].tTextureResource);
-            ptPlanet->sbtChunkFiles[i].tTextureResource = (plResourceHandle){0};
-            ptPlanet->sbtChunkFiles[i].uTextureIndex = 0;
-        }
-        else if(ptPlanet->sbtChunkFiles[i].uTextureIndex != 0)
-        {
-            ptPlanet->sbtChunkFiles[i].uTextureIndex = 0;
-        }
-        PL_FREE(ptPlanet->sbtChunkFiles[i].tFile.atChunks);
-        ptPlanet->sbtChunkFiles[i].tFile.atChunks = NULL;
-        ptPlanet->sbtChunkFiles[i].tFile.uChunkCount = 0;
-        ptPlanet->sbtChunkFiles[i].tFile.dMaxBaseError = 0.0;
-        ptPlanet->sbtChunkFiles[i].tFile.iTreeDepth = 0;
-        // if(ptPlanet->sbtChunkFiles[i].ptPakFile)
-        //     gptPak->unload(&ptPlanet->sbtChunkFiles[i].ptPakFile);
-    }
-
-    // cleanup our resources
-    gptGfx->destroy_buffer(ptDevice, ptPlanet->tVertexBuffer);
-    gptGfx->destroy_buffer(ptDevice, ptPlanet->tIndexBuffer);
-    gptFreeList->cleanup(&ptPlanet->tVertexBufferManager);
-    gptFreeList->cleanup(&ptPlanet->tIndexBufferManager);
-
-
-
-    pl_sb_free(ptPlanet->sbuFreeRequests);
-    pl_sb_free(ptPlanet->sbtChunkFiles);
-    PL_FREE(ptPlanet->atTiles);
-    PL_FREE(ptPlanet);
-}
-
-
-//-----------------------------------------------------------------------------
-// [SECTION] planet view api
-//-----------------------------------------------------------------------------
-
-plPlanetView*
-pl_create_planet_view(plPlanet* ptPlanet, plCommandBuffer* ptCmdBuffer, plPlanetViewInit tInit)
-{
-    plPlanetView* ptView = PL_ALLOC(sizeof(plPlanetView));
-    memset(ptView, 0, sizeof(plPlanetView));
-
-    ptView->ptPlanet = ptPlanet;
-    ptView->tRuntimeOptions.fTau = 0.3f;
-    ptView->tRuntimeOptions.fHazardMapStrength = 0.3f;
-    ptView->uOutputWidth  = tInit.uOutputWidth;
-    ptView->uOutputHeight = tInit.uOutputHeight;
-    ptView->pt3dDrawlist  = gptDraw->request_3d_drawlist();
-
-    // color texture
-    const plTextureDesc tOutputTextureDesc = {
-        .tDimensions = {(float)ptView->uOutputWidth, (float)ptView->uOutputHeight, 1},
-        .tFormat     = PL_FORMAT_R8G8B8A8_UNORM,
-        .uLayers     = 1,
-        .uMips       = 1,
-        .tType       = PL_TEXTURE_TYPE_2D,
-        .tUsage      = PL_TEXTURE_USAGE_SAMPLED | PL_TEXTURE_USAGE_COLOR_ATTACHMENT,
-        .pcDebugName = "view output"
-    };
-    ptView->tOutputTexture = pl__planet_create_texture(ptCmdBuffer, &tOutputTextureDesc, "view output");
-    ptView->tOutputTextureHandle = gptDraw->create_bind_group_for_texture(ptView->tOutputTexture);
-
-    // depth texture
-    const plTextureDesc tDepthTextureDesc = {
-        .tDimensions = {(float)ptView->uOutputWidth, (float)ptView->uOutputHeight, 1},
-        .tFormat     = PL_FORMAT_D32_FLOAT_S8_UINT,
-        .uLayers     = 1,
-        .uMips       = 1,
-        .tType       = PL_TEXTURE_TYPE_2D,
-        .tUsage      = PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT,
-        .pcDebugName = "view depth"
-    };
-    ptView->tOutputTextureDepth = pl__planet_create_texture(ptCmdBuffer, &tDepthTextureDesc, "view depth");
-
-    // Initialize layouts for the first render pass. The view render pass declares
-    // these as its current usages, so Vulkan needs an explicit transition out of
-    // undefined before the first submit.
-    plBlitEncoder* ptInitEncoder = gptGfx->begin_blit_pass(ptCmdBuffer);
-    gptGfx->set_texture_usage(ptInitEncoder, ptView->tOutputTexture, PL_TEXTURE_USAGE_SAMPLED, 0);
-    gptGfx->set_texture_usage(ptInitEncoder, ptView->tOutputTextureDepth, PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT, 0);
-    gptGfx->end_blit_pass(ptInitEncoder);
-
-    // render pass
-    plRenderPassAttachments atAttachmentSets[PL_MAX_FRAMES_IN_FLIGHT] = {0};
-    for(uint32_t i = 0; i < gptGfx->get_frames_in_flight(); i++)
-    {
-        atAttachmentSets[i].atViewAttachments[0] = ptView->tOutputTextureDepth;
-        atAttachmentSets[i].atViewAttachments[1] = ptView->tOutputTexture;
-    }
-
-    const plRenderPassDesc tRenderPassDesc = {
-        .tLayout = gptCtx->tRenderPassLayout,
-        .tDepthTarget = {
-                .tLoadOp         = PL_LOAD_OP_CLEAR,
-                .tStoreOp        = PL_STORE_OP_STORE,
-                .tStencilLoadOp  = PL_LOAD_OP_CLEAR,
-                .tStencilStoreOp = PL_STORE_OP_STORE,
-                .tCurrentUsage   = PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT,
-                .tNextUsage      = PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT,
-                .fClearZ         = 0.0f
-        },
-        .atColorTargets = {
-            {
-                .tLoadOp       = PL_LOAD_OP_CLEAR,
-                .tStoreOp      = PL_STORE_OP_STORE,
-                .tCurrentUsage = PL_TEXTURE_USAGE_SAMPLED,
-                .tNextUsage    = PL_TEXTURE_USAGE_SAMPLED,
-                .tClearColor   = {0.0f, 0.0f, 0.0f, 1.0f}
-            }
-        },
-        .tDimensions = {.x = (float)ptView->uOutputWidth, .y = (float)ptView->uOutputHeight},
-        .pcDebugName = "View"
-    };
-    ptView->tRenderPass = gptGfx->create_render_pass(gptCtx->ptDevice, &tRenderPassDesc, atAttachmentSets);
-
-    if(tInit.pcVertexShader == NULL) tInit.pcVertexShader = "planet.vert";
-    if(tInit.pcFragmentShader == NULL) tInit.pcFragmentShader = "planet.frag";
-
-    ptView->pcVertexShader = tInit.pcVertexShader;
-    ptView->pcFragmentShader = tInit.pcFragmentShader;
-    pl_planet_load_shaders(ptView);
-
-    return ptView;
-}
-
-void
-pl_cleanup_planet_view(plPlanetView* ptView)
-{
-    plDevice* ptDevice = gptCtx->ptDevice;
-    gptGfx->destroy_render_pass(ptDevice, ptView->tRenderPass);
-    gptGfx->destroy_texture(ptDevice, ptView->tOutputTexture);
-    gptGfx->destroy_texture(ptDevice, ptView->tOutputTextureDepth);
-    PL_FREE(ptView);
-}
-
-void
-pl_render_to_planet_view(plPlanetView* ptView, plCamera* ptCamera, plCommandBuffer* ptCmdBuffer)
-{
-    const plMat4 tMVP = pl_mul_mat4(&ptCamera->tProjMat, &ptCamera->tViewMat);
-    plDevice* ptDevice = gptCtx->ptDevice;
-    gptCtx->tCurrentDynamicBufferBlock = gptGfx->allocate_dynamic_data_block(ptDevice);
-
-    plRenderEncoder* ptEncoder = gptGfx->begin_render_pass(ptCmdBuffer, ptView->tRenderPass, NULL);
-
-    plRenderViewport tViewport = {
-        .fWidth    = (float)ptView->uOutputWidth,
-        .fHeight   = (float)ptView->uOutputHeight,
-        .fMinDepth = 0.0f,
-        .fMaxDepth = 1.0f
-    };
-    gptGfx->set_viewport(ptEncoder, &tViewport);
-
-    plScissor tScissor = {
-        .uWidth  = ptView->uOutputWidth,
-        .uHeight = ptView->uOutputHeight
-    };
-    gptGfx->set_scissor_region(ptEncoder, &tScissor);
-    gptGfx->set_depth_bias(ptEncoder, 0.0f, 0.0f, 0.0f);
-
-        plShaderHandle tShader = {0};
-        if(ptView->ptPlanet->tInfo.tFlags & PL_PLANET_PROCESSING_FLAGS_DOUBLE_PRECISION)
-            tShader = (ptView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_WIREFRAME) ? ptView->tWireframeShaderDouble : ptView->tShaderDouble;
-        else
-            tShader = (ptView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_WIREFRAME) ? ptView->tWireframeShader : ptView->tShader;
-
-        gptGfx->bind_shader(ptEncoder, tShader);
-        gptGfx->bind_vertex_buffer(ptEncoder, ptView->ptPlanet->tVertexBuffer);
-        gptGfx->bind_graphics_bind_groups(
-            ptEncoder,
-            tShader,
-            0, 1,
-            &gptCtx->atBindGroups[gptGfx->get_current_frame_index()],
-            0, NULL
-        );
-
-    for(uint32_t i = 0; i < pl_sb_size(ptView->ptPlanet->sbtChunkFiles); i++)
-        pl__render_chunk(ptView, ptCamera, ptEncoder, &ptView->ptPlanet->sbtChunkFiles[i].tFile.atChunks[0], &ptView->ptPlanet->sbtChunkFiles[i].tFile, &tMVP);
-
-    if(ptView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_SHOW_ORIGIN)
-    {
-        const plMat4 tOrigin = pl_identity_mat4();
-        gptDraw->add_3d_transform(ptView->pt3dDrawlist, &tOrigin, (float)ptView->ptPlanet->dRadius * 1.2f, (plDrawLineOptions){0, 100000000.0f});
-    }
-
-    gptDraw->submit_3d_drawlist(ptView->pt3dDrawlist,
-        ptEncoder,
-        (float)ptView->uOutputWidth,
-        (float)ptView->uOutputHeight,
-        &tMVP,
-        PL_DRAW_FLAG_DEPTH_TEST | PL_DRAW_FLAG_DEPTH_WRITE | PL_DRAW_FLAG_REVERSE_Z_DEPTH,
-        PL_SAMPLE_COUNT_1);
-
-    gptGfx->end_render_pass(ptEncoder);
-}
-
-plBindGroupHandle
-pl_get_planet_view_texture(plPlanetView* ptView)
-{
-    return ptView->tOutputTextureHandle;
-}
-
-plTextureHandle
-pl_get_planet_view_output_texture(plPlanetView* ptView)
-{
-    return ptView->tOutputTexture;
-}
-
-// Helper: clamp integer to a range
-static inline int clampi(int v, int lo, int hi)
-{
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
-void
-pl_planet_set_texture(plPlanet* ptPlanet, plPlanetTexture* ptPlanetTexture, uint32_t uSlot)
-{
-    (void)uSlot;
-
-    // ---------------------------------------------------------------------
-    // Evict/unbind previous textures for all chunk files
-    // ---------------------------------------------------------------------
-    for (uint32_t i = 0; i < pl_sb_size(ptPlanet->sbtChunkFiles); i++)
-    {
-        if (ptPlanet->sbtChunkFiles[i].uTextureIndex != 0)
-        {
-            if (!gptResource->is_valid(ptPlanet->sbtChunkFiles[i].tTextureResource))
-            {
-                ptPlanet->sbtChunkFiles[i].uTextureIndex = 0;
-                continue;
-            }
-
-            plTextureHandle tTexture = gptResource->get_texture(ptPlanet->sbtChunkFiles[i].tTextureResource);
-            pl__planet_return_bindless_texture_index(tTexture);
-            ptPlanet->sbtChunkFiles[i].uTextureIndex = 0;
-            gptResource->evict(ptPlanet->sbtChunkFiles[i].tTextureResource);
-            gptResource->unload(ptPlanet->sbtChunkFiles[i].tTextureResource);
-            ptPlanet->sbtChunkFiles[i].tTextureResource = (plResourceHandle){0};
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Active tile mask (use tInfo counts consistently)
-    // ---------------------------------------------------------------------
-    const uint32_t uH          = ptPlanet->tInfo.uHorizontalTiles;
-    const uint32_t uV          = ptPlanet->tInfo.uVerticalTiles;
-    const uint32_t uTileCount  = ptPlanet->tInfo.uTileCount;
-
-    bool* abActiveTextureTiles = PL_ALLOC(sizeof(bool) * uTileCount);
-    memset(abActiveTextureTiles, 0, sizeof(bool) * uTileCount);
-
-    if (ptPlanetTexture)
-    {
-        if (ptPlanetTexture->pcPath == NULL || ptPlanetTexture->pcPath[0] == '\0' || ptPlanetTexture->fMetersPerPixel <= 0.0f)
-        {
-            PL_FREE(abActiveTextureTiles);
-            return;
-        }
-
-        // Texture center is already in projected meters
-        const float fX = (float)ptPlanetTexture->dOriginX;
-        const float fY = (float)ptPlanetTexture->dOriginY;
-
-        // -----------------------------------------------------------------
-        // Compute world-space bounds of the incoming image in meters
-        // -----------------------------------------------------------------
-        plImageInfo tImageInfo = (plImageInfo){0};
-        gptImage->get_info_from_file(ptPlanetTexture->pcPath, &tImageInfo);
-        if (tImageInfo.iWidth <= 0 || tImageInfo.iHeight <= 0)
-        {
-            PL_FREE(abActiveTextureTiles);
-            return;
-        }
-
-        const float imgWm = (float)tImageInfo.iWidth  * ptPlanetTexture->fMetersPerPixel;
-        const float imgHm = (float)tImageInfo.iHeight * ptPlanetTexture->fMetersPerPixel;
-
-        const plVec2 tTextureMin = {
-            .x = fX - 0.5f * imgWm,
-            .y = fY - 0.5f * imgHm,
-        };
-        const plVec2 tTextureMax = {
-            .x = fX + 0.5f * imgWm,
-            .y = fY + 0.5f * imgHm,
-        };
-
-        // -----------------------------------------------------------------
-        // Compute signed tile index range (BR index inclusive)
-        // -----------------------------------------------------------------
-        const float tileSizeM = (float)ptPlanet->tInfo.uSize * (float)ptPlanet->tInfo.dMetersPerPixel;
-
-        int tlx = (int)floorf((tTextureMin.x - ptPlanet->tTopLeftGlobal.x) / tileSizeM);
-        int tly = (int)floorf((ptPlanet->tTopLeftGlobal.y - tTextureMax.y) / tileSizeM);
-        int brx = (int)ceilf((tTextureMax.x - ptPlanet->tTopLeftGlobal.x) / tileSizeM) - 1;
-        int bry = (int)ceilf((ptPlanet->tTopLeftGlobal.y - tTextureMin.y) / tileSizeM) - 1;
-
-        // No overlap with tile grid? Early out
-        if (!(tlx > (int)uH - 1 || tly > (int)uV - 1 || brx < 0 || bry < 0))
-        {
-
-            // Clamp to grid
-            tlx = clampi(tlx, 0, (int)uH - 1);
-            tly = clampi(tly, 0, (int)uV - 1);
-            brx = clampi(brx, 0, (int)uH - 1);
-            bry = clampi(bry, 0, (int)uV - 1);
-
-            // Normalize order (defensive if rounding flipped them)
-            if (brx < tlx) { int t = brx; brx = tlx; tlx = t; }
-            if (bry < tly) { int t = bry; bry = tly; tly = t; }
-
-            const uint32_t tlIndex = (uint32_t)(tlx + tly * (int)uH);
-            const uint32_t brIndex = (uint32_t)(brx + bry * (int)uH);
-
-            if (tlIndex < uTileCount && brIndex < uTileCount)
-            {
-
-                // -----------------------------------------------------------------
-                // Get local world coords of the clamped tile rectangle
-                //     (Use tile centers +/− half a tile to form inclusive bounds)
-                // -----------------------------------------------------------------
-                plVec2 tCanvasMin = {0};
-                plVec2 tCanvasMax = {0};
-
-                // --- Top-left tile local origin ---
-                {
-                    const float Xc = (float)ptPlanet->atTiles[tlIndex].dOriginX;
-                    const float Yc = (float)ptPlanet->atTiles[tlIndex].dOriginY;
-
-                    tCanvasMin.x = Xc - 0.5f * tileSizeM;
-                    tCanvasMax.y = Yc + 0.5f * tileSizeM;
-                }
-
-                // --- Bottom-right tile local corner ---
-                {
-                    const float Xc = (float)ptPlanet->atTiles[brIndex].dOriginX;
-                    const float Yc = (float)ptPlanet->atTiles[brIndex].dOriginY;
-
-                    tCanvasMax.x = Xc + 0.5f * tileSizeM;
-                    tCanvasMin.y = Yc - 0.5f * tileSizeM;
-                }
-
-
-                // -----------------------------------------------------------------
-                // Build a full canvas covering [tl..br] tiles, and place image
-                // -----------------------------------------------------------------
-                int iImageWidth  = 0;
-                int iImageHeight = 0;
-                int _unused      = 0;
-                unsigned char* pucImageData = gptImage->load_from_file(
-                    ptPlanetTexture->pcPath, &iImageWidth, &iImageHeight, &_unused, 4);
-                if (pucImageData == NULL || iImageWidth <= 0 || iImageHeight <= 0)
-                {
-                    if (pucImageData)
-                        gptImage->free(pucImageData);
-                    PL_FREE(abActiveTextureTiles);
-                    return;
-                }
-
-                plImageOpInit tFullInfo = {
-                    .uVirtualWidth    = (uint32_t)fmaxf(1.0f, (tCanvasMax.x - tCanvasMin.x) / ptPlanetTexture->fMetersPerPixel),
-                    .uVirtualHeight   = (uint32_t)fmaxf(1.0f, (tCanvasMax.y - tCanvasMin.y) / ptPlanetTexture->fMetersPerPixel),
-                    .uChannels = 4,
-                    .uStride   = 4
-                };
-
-                plImageOpData tFullData = (plImageOpData){0};
-                gptImageOps->initialize(&tFullInfo, &tFullData);
-                // gptImageOps->add_region(&tFullData, 0, 0, tFullInfo.uVirtualWidth, tFullInfo.uVirtualHeight, PL_IMAGE_OP_COLOR_WHITE);
-
-                // If square() changes dims, we must use tFullData.uWidth/Height afterward
-                gptImageOps->square(&tFullData);
-
-                // Pixel offsets for where the image should land on the full canvas
-                const float fDistanceX = tTextureMin.x - tCanvasMin.x;
-                const float fDistanceY = tCanvasMax.y - tTextureMax.y;
-
-                uint32_t fullW = tFullData.uVirtualWidth;
-                uint32_t fullH = tFullData.uVirtualHeight;
-
-                const float fEffectiveMetersPerPixelX =
-                    (tCanvasMax.x - tCanvasMin.x) / (float)fullW;
-                const float fEffectiveMetersPerPixelY =
-                    (tCanvasMax.y - tCanvasMin.y) / (float)fullH;
-
-                const float fEffectiveMetersPerPixel = pl_max(fEffectiveMetersPerPixelX, fEffectiveMetersPerPixelY);
-
-                const uint32_t uXOffsetIndex =
-                    (uint32_t)fmaxf(0.0f, floorf(fDistanceX / fEffectiveMetersPerPixel));
-                const uint32_t uYOffsetIndex =
-                    (uint32_t)fmaxf(0.0f, floorf(fDistanceY / fEffectiveMetersPerPixel));
-
-                gptImageOps->add(&tFullData, uXOffsetIndex, uYOffsetIndex, (uint32_t)iImageWidth, (uint32_t)iImageHeight, pucImageData);
-                gptImageOps->square(&tFullData);
-                fullW = tFullData.uVirtualWidth;
-                fullH = tFullData.uVirtualHeight;
-                gptImage->free(pucImageData);
-
-                // -----------------------------------------------------------------
-                // Slice canvas into per-tile images
-                // -----------------------------------------------------------------
-                const uint32_t uHorizontalExtent = (uint32_t)(brx - tlx + 1);
-                const uint32_t uVerticalExtent   = (uint32_t)(bry - tly + 1);
-
-                // Avoid zero increments if canvas is very small
-                uint32_t uXInc = (uHorizontalExtent > 0) ? (fullW / uHorizontalExtent) : 0;
-                uint32_t uYInc = (uVerticalExtent   > 0) ? (fullH / uVerticalExtent)   : 0;
-                if (uXInc == 0) uXInc = 1;
-                if (uYInc == 0) uYInc = 1;
-
-                uint32_t uInc = pl_min(uXInc, uYInc);
-
-                const uint32_t uActiveX0 = tFullData.uActiveXOffset;
-                const uint32_t uActiveY0 = tFullData.uActiveYOffset;
-                const uint32_t uActiveX1 = tFullData.uActiveXOffset + tFullData.uActiveWidth;
-                const uint32_t uActiveY1 = tFullData.uActiveYOffset + tFullData.uActiveHeight;
-
-                for (uint32_t ix = 0; ix < uHorizontalExtent; ix++)
-                {
-                    const uint32_t uTileX0 = ix * uInc;
-                    const uint32_t uTileX1 = pl_min(uTileX0 + uInc, tFullData.uVirtualWidth);
-
-                    if(uTileX0 >= uTileX1)
-                        break;
-
-                    if(uTileX0 >= uActiveX1 || uTileX1 <= uActiveX0)
-                        continue;
-
-                    for (uint32_t iy = 0; iy < uVerticalExtent; iy++)
-                    {
-                        const uint32_t uTileY0 = iy * uInc;
-                        const uint32_t uTileY1 = pl_min(uTileY0 + uInc, tFullData.uVirtualHeight);
-
-                        if(uTileY0 >= uTileY1)
-                            break;
-
-                        if(uTileY0 >= uActiveY1 || uTileY1 <= uActiveY0)
-                            continue;
-
-
-                        const uint32_t tileX = (uint32_t)(tlx + (int)ix);
-                        const uint32_t tileY = (uint32_t)(tly + (int)iy);
-
-                        char acNameBuffer[128] = {0};
-                        sprintf(acNameBuffer, "hazard_prep_%u_%u.png", tileX, tileY);
-
-                        const size_t flat = (size_t)tileX + (size_t)tileY * (size_t)uH;
-                        if (flat >= (size_t)uTileCount)
-                            continue;
-
-
-
-                        int iSubXOffset = (int)uTileX0;
-                        int iSubXEnd = (int)uTileX1;
-                        int iSubYOffset = (int)uTileY0;
-                        int iSubYEnd = (int)uTileY1;
-                        int iFinalWidth = iSubXEnd - iSubXOffset;
-                        int iFinalHeight= iSubYEnd - iSubYOffset;
-
-                        uint8_t* puImageData = gptImageOps->extract(&tFullData, iSubXOffset, iSubYOffset, iFinalWidth, iFinalHeight, NULL);
-
-                        plImageWriteInfo tWriteInfo = {
-                            .iWidth       = (int)iFinalWidth,
-                            .iHeight      = (int)iFinalHeight,
-                            .iComponents  = 4,
-                            .iByteStride  = (int)(iFinalWidth * 4)
-                        };
-                        gptImage->write(acNameBuffer, puImageData, &tWriteInfo);
-                        gptImageOps->cleanup_extract(puImageData);
-
-                        sprintf(ptPlanet->sbtChunkFiles[flat].acPakFileName, "%s", acNameBuffer);
-
-                        plResourceHandle tTextureResource = gptResource->load_ex(
-                            ptPlanet->sbtChunkFiles[flat].acPakFileName,
-                            PL_RESOURCE_LOAD_FLAG_NO_CACHING, NULL, 0,
-                            NULL, 0);
-                        if (!gptResource->is_valid(tTextureResource))
-                            continue;
-                        gptResource->make_resident(tTextureResource);
-                        plTextureHandle tTexture = gptResource->get_texture(tTextureResource);
-                        ptPlanet->sbtChunkFiles[flat].tTextureResource = tTextureResource;
-                        ptPlanet->sbtChunkFiles[flat].uTextureIndex = pl__planet_get_bindless_texture_index(tTexture);
-                        abActiveTextureTiles[flat] = true;
-
-                        for(uint32_t i = 0; i < ptPlanet->sbtChunkFiles[flat].tFile.uChunkCount; i++)
-                        {
-                            uint32_t uTopDownLevel = ptPlanet->sbtChunkFiles[flat].tFile.iTreeDepth - ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].uLevel - 1;
-
-                            // chunk width
-                            uint32_t uWidth = (uint32_t)pl_max(1.0f, floorf((float)uInc / powf(2.0f, (float)uTopDownLevel)));
-                            uint32_t uHeight = (uint32_t)pl_max(1.0f, floorf((float)uInc / powf(2.0f, (float)uTopDownLevel)));
-
-                            // final scaling factor
-                            float fXScale = (float)uWidth / (float)iFinalWidth;
-                            float fYScale = (float)uHeight / (float)iFinalHeight;
-
-                            ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].tUVScale.x = fXScale;
-                            ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].tUVScale.y = fYScale;
-
-                            // UV on parent chunk
-                            float fU = (float)ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].fX; // UV on original heightmap
-                            float fV = (float)ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].fY; // UV on original heightmap
-
-                            // convert to UV in final texture space
-                            fU = fU * (float)uInc / (float)iFinalWidth;
-                            fU = fU - (float)(iSubXOffset - ix * uInc) / (float)iFinalWidth;
-
-                            fV = fV * (float)uInc / (float)iFinalHeight;
-                            fV = fV - (float)(iSubYOffset - iy * uInc) / (float)iFinalHeight;
-
-                            // works for root level but does too much at child levels
-                            ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].tUVOffset.x = fU;
-                            ptPlanet->sbtChunkFiles[flat].tFile.atChunks[i].tUVOffset.y = fV;
-                        }
-                    }
-                }
-                gptImageOps->cleanup(&tFullData);
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Update chunk files with generated hazard textures
-    // ---------------------------------------------------------------------
-    for (uint32_t k = 0; k < uTileCount; k++)
-    {
-        if(!abActiveTextureTiles[k])
-        {
-            for(uint32_t i = 0; i < ptPlanet->sbtChunkFiles[k].tFile.uChunkCount; i++)
-            {
-                ptPlanet->sbtChunkFiles[k].tFile.atChunks[i].tUVScale.x = 1.0f;
-                ptPlanet->sbtChunkFiles[k].tFile.atChunks[i].tUVScale.y = 1.0f;
-                ptPlanet->sbtChunkFiles[k].tFile.atChunks[i].tUVOffset.x = 0.0f;
-                ptPlanet->sbtChunkFiles[k].tFile.atChunks[i].tUVOffset.y = 0.0f;
-            }
-        }
-    }
-
-    PL_FREE(abActiveTextureTiles);
-}
-
-bool
-pl_chlod_load_chunk_file(plPlanet* ptPlanet, const char* pcPath, plPlanetLoadFlags tFlags)
-{
-    plChunkFileData tChunkFileData = {0};
-    uint32_t uChunkFileID = pl_sb_size(ptPlanet->sbtChunkFiles);
-    gptTerrainProcessor->load_chunk_file(pcPath, &tChunkFileData.tFile, uChunkFileID);
-
-    for(uint32_t i = 0; i < tChunkFileData.tFile.uChunkCount; i++)
-    {
-
-        tChunkFileData.tFile.atChunks[i].uIndex = i;
-
-        tChunkFileData.tFile.atChunks[i].tUVScale.x = 1.0f;
-        tChunkFileData.tFile.atChunks[i].tUVScale.y = 1.0f;
-    }
-    pl_sb_push(ptPlanet->sbtChunkFiles, tChunkFileData);
-    return true;
-}
-
-void
-pl_planet_load_shaders(plPlanetView* ptPlanet)
-{
-    if(gptGfx->is_shader_valid(gptCtx->ptDevice, ptPlanet->tShader))
-    {
-        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tShader);
-        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tWireframeShader);
-        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tShaderDouble);
-        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, ptPlanet->tWireframeShaderDouble);
-    }
-
-    plShaderDesc tShaderDesc = {
-        .tVertexShader    = gptShader->load_glsl(ptPlanet->pcVertexShader, "main", NULL, NULL),
-        .tFragmentShader  = gptShader->load_glsl(ptPlanet->pcFragmentShader, "main", NULL, NULL),
-        .tGraphicsState = {
-            .ulDepthWriteEnabled  = 1,
-            .ulDepthMode          = PL_COMPARE_MODE_GREATER_OR_EQUAL,
-            .ulCullMode           = PL_CULL_MODE_CULL_BACK,
-            .ulWireframe          = 0,
-            .ulStencilMode        = PL_COMPARE_MODE_ALWAYS,
-            .ulStencilRef         = 0xff,
-            .ulStencilMask        = 0xff,
-            .ulStencilOpFail      = PL_STENCIL_OP_KEEP,
-            .ulStencilOpDepthFail = PL_STENCIL_OP_KEEP,
-            .ulStencilOpPass      = PL_STENCIL_OP_KEEP
-        },
-        .atVertexBufferLayouts = {
-            {
-                .atAttributes = {
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT3},
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT2},
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT2}
-                }
-            }
-        },
-        .atBlendStates = {
-            {
-                .bBlendEnabled   = false,
-                .uColorWriteMask = PL_COLOR_WRITE_MASK_ALL,
-                .tSrcColorFactor = PL_BLEND_FACTOR_SRC_ALPHA,
-                .tDstColorFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .tColorOp        = PL_BLEND_OP_ADD,
-                .tSrcAlphaFactor = PL_BLEND_FACTOR_SRC_ALPHA,
-                .tDstAlphaFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .tAlphaOp        = PL_BLEND_OP_ADD
-            }
-        },
-        .atBindGroupLayouts = {
-            {
-                .atSamplerBindings = {
-                    { .uSlot = 0, .tStages = PL_SHADER_STAGE_FRAGMENT}
-                },
-                .atTextureBindings = {
-                    {.uSlot = 1, .tStages = PL_SHADER_STAGE_FRAGMENT, .tType = PL_TEXTURE_BINDING_TYPE_SAMPLED, .bNonUniformIndexing = true, .uDescriptorCount = PL_PLANET_MAX_BINDLESS_TEXTURES}
-                }
-            }
-        },
-        .tRenderPassLayout = gptCtx->tRenderPassLayout,
-    };
-    plDevice* ptDevice = gptCtx->ptDevice;
-    ptPlanet->tShader = gptGfx->create_shader(ptDevice, &tShaderDesc);
-
-    tShaderDesc.tGraphicsState.ulWireframe = 1;
-    tShaderDesc.tGraphicsState.ulDepthWriteEnabled = 0;
-    tShaderDesc.tGraphicsState.ulDepthMode = PL_COMPARE_MODE_ALWAYS;
-    ptPlanet->tWireframeShader = gptGfx->create_shader(ptDevice, &tShaderDesc);
-
-    plShaderOptions tOriginalOptions = *gptShader->get_options();
-
-    plShaderOptions tNewDefaultShaderOptions = tOriginalOptions;
-    tNewDefaultShaderOptions.tFlags = PL_SHADER_FLAGS_AUTO_OUTPUT | PL_SHADER_FLAGS_INCLUDE_DEBUG | PL_SHADER_FLAGS_ALWAYS_COMPILE;
-    tNewDefaultShaderOptions.atMacroDefinitions[0].pcName = "PL_PLANET_DOUBLE_PRECISON";
-    tNewDefaultShaderOptions.atMacroDefinitions[0].pcValue = "1";
-    gptShader->set_options(&tNewDefaultShaderOptions);
-
-    plShaderDesc tShaderDoubleDesc = {
-        .tVertexShader    = gptShader->load_glsl(ptPlanet->pcVertexShader, "main", NULL, NULL),
-        .tFragmentShader  = gptShader->load_glsl(ptPlanet->pcFragmentShader, "main", NULL, NULL),
-        .tGraphicsState = {
-            .ulDepthWriteEnabled  = 1,
-            .ulDepthMode          = PL_COMPARE_MODE_GREATER_OR_EQUAL,
-            .ulCullMode           = PL_CULL_MODE_CULL_BACK,
-            .ulWireframe          = 0,
-            .ulStencilMode        = PL_COMPARE_MODE_ALWAYS,
-            .ulStencilRef         = 0xff,
-            .ulStencilMask        = 0xff,
-            .ulStencilOpFail      = PL_STENCIL_OP_KEEP,
-            .ulStencilOpDepthFail = PL_STENCIL_OP_KEEP,
-            .ulStencilOpPass      = PL_STENCIL_OP_KEEP
-        },
-        .atVertexBufferLayouts = {
-            {
-                .atAttributes = {
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT3},
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT3},
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT2},
-                    {.tFormat = PL_VERTEX_FORMAT_FLOAT2}
-                }
-            }
-        },
-        .atBlendStates = {
-            {
-                .bBlendEnabled   = false,
-                .uColorWriteMask = PL_COLOR_WRITE_MASK_ALL,
-                .tSrcColorFactor = PL_BLEND_FACTOR_SRC_ALPHA,
-                .tDstColorFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .tColorOp        = PL_BLEND_OP_ADD,
-                .tSrcAlphaFactor = PL_BLEND_FACTOR_SRC_ALPHA,
-                .tDstAlphaFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-                .tAlphaOp        = PL_BLEND_OP_ADD
-            }
-        },
-        .atBindGroupLayouts = {
-            {
-                .atSamplerBindings = {
-                    { .uSlot = 0, .tStages = PL_SHADER_STAGE_FRAGMENT}
-                },
-                .atTextureBindings = {
-                    {.uSlot = 1, .tStages = PL_SHADER_STAGE_FRAGMENT, .tType = PL_TEXTURE_BINDING_TYPE_SAMPLED, .bNonUniformIndexing = true, .uDescriptorCount = PL_PLANET_MAX_BINDLESS_TEXTURES}
-                }
-            }
-        },
-        .tRenderPassLayout = gptCtx->tRenderPassLayout,
-    };
-    ptPlanet->tShaderDouble = gptGfx->create_shader(ptDevice, &tShaderDoubleDesc);
-
-    tShaderDoubleDesc.tGraphicsState.ulWireframe = 1;
-    tShaderDoubleDesc.tGraphicsState.ulDepthWriteEnabled = 0;
-    tShaderDoubleDesc.tGraphicsState.ulDepthMode = PL_COMPARE_MODE_ALWAYS;
-    ptPlanet->tWireframeShaderDouble = gptGfx->create_shader(ptDevice, &tShaderDoubleDesc);
-
-    gptShader->set_options(&tOriginalOptions);
-}
-
-static void
-pl_planet_set_shaders(plPlanetView* ptPlanet, const char* pcVertexShader, const char* pcFragmentShader)
-{
-    ptPlanet->pcVertexShader   = pcVertexShader   ? pcVertexShader   : "planet.vert";
-    ptPlanet->pcFragmentShader = pcFragmentShader ? pcFragmentShader : "planet.frag";
-    pl_planet_load_shaders(ptPlanet);
-}
-
-void
-pl_draw_sphere(plPlanetView* ptPlanet, float fLongitude, float fLatitude, float fHeight, float fSphereRadius, uint32_t uColor)
-{
-    fLongitude = pl_radiansf(fLongitude);
-    fLatitude = pl_radiansf(fLatitude);
-
-    float fRadius = (float)ptPlanet->ptPlanet->dRadius + fHeight;
-
-    float fX = fRadius * cosf(fLatitude) * sinf(fLongitude);
-    float fY = fRadius * sinf(fLatitude);
-    float fZ = fRadius * cosf(fLatitude) * cosf(fLongitude);
-
-    plSphere tSphere = {
-        .fRadius = fSphereRadius,
-        .tCenter = {
-            fX, fY, fZ
-        }
-    };
-
-    gptDraw->add_3d_sphere_filled(ptPlanet->pt3dDrawlist, tSphere, 0, 0, (plDrawSolidOptions){.uColor = uColor});
-}
-
-void
-pl_draw_polygon(plPlanetView* ptView, plVec3* atPoints, uint32_t uCount, float fLineWidth, uint32_t uColor)
-{
-    for(uint32_t i = 0; i < uCount; i++)
-        gptDraw->add_3d_line(ptView->pt3dDrawlist, atPoints[i], atPoints[(i + 1) % uCount],
-            (plDrawLineOptions){.fThickness = fLineWidth, .uColor = uColor});
-}
-
-void
-pl_draw_line(plPlanetView* ptView, plVec3* atPoints, uint32_t uCount, float fLineWidth, uint32_t uColor)
-{
-    for(uint32_t i = 0; i + 1 < uCount; i++)
-        gptDraw->add_3d_line(ptView->pt3dDrawlist, atPoints[i], atPoints[i + 1],
-            (plDrawLineOptions){.fThickness = fLineWidth, .uColor = uColor});
-}
-
-void
-pl_draw_polygon_filled(plPlanetView* ptView, plVec3* atPoints, uint32_t uCount, uint32_t uColor)
-{
-    for(uint32_t i = 1; i + 1 < uCount; i++)
-        gptDraw->add_3d_triangle_filled(ptView->pt3dDrawlist, atPoints[0], atPoints[i], atPoints[i + 1],
-            (plDrawSolidOptions){.uColor = uColor});
-}
-
-void
-pl_draw_text(plPlanetView* ptView, plCamera* ptCamera, plVec3 tPosition, const char* pcText, float fSizeMeters, uint32_t uColor)
-{
-    // ray-sphere occlusion test: skip if planet blocks line of sight
-    // ray origin = camera, ray direction = text position - camera
-    float fRadius = (float)ptView->ptPlanet->dRadius;
-    plVec3 tRayOrigin = ptCamera->tPos;
-    plVec3 tRayDir = {
-        tPosition.x - tRayOrigin.x,
-        tPosition.y - tRayOrigin.y,
-        tPosition.z - tRayOrigin.z
-    };
-    float fDistance = sqrtf(tRayDir.x * tRayDir.x + tRayDir.y * tRayDir.y + tRayDir.z * tRayDir.z);
-    if(fDistance < 0.001f)
-        fDistance = 0.001f;
-
-    // solve ray-sphere intersection: |O + tD|^2 = R^2
-    // a = D·D, b = 2*O·D, c = O·O - R^2
-    float a = tRayDir.x * tRayDir.x + tRayDir.y * tRayDir.y + tRayDir.z * tRayDir.z;
-    float b = 2.0f * (tRayOrigin.x * tRayDir.x + tRayOrigin.y * tRayDir.y + tRayOrigin.z * tRayDir.z);
-    float c = tRayOrigin.x * tRayOrigin.x + tRayOrigin.y * tRayOrigin.y + tRayOrigin.z * tRayOrigin.z - fRadius * fRadius;
-    float discriminant = b * b - 4.0f * a * c;
-
-    if(discriminant > 0.0f)
-    {
-        // ray intersects sphere — check if intersection is between camera and text
-        float t = (-b - sqrtf(discriminant)) / (2.0f * a);
-        if(t > 0.0f && t < 1.0f)
-            return; // planet is blocking the view
-    }
-
-    // convert world-space size (meters) to pixel size
-    // pixel_size = world_size * viewport_height / (2 * distance * tan(fov/2))
-    float fPixelSize = fSizeMeters * (float)ptView->uOutputHeight / (2.0f * fDistance * tanf(ptCamera->fFieldOfView * 0.5f));
-
-    // clamp to reasonable range
-    if(fPixelSize < 1.0f)
-        fPixelSize = 1.0f;
-    if(fPixelSize > 500.0f)
-        fPixelSize = 500.0f;
-
-    plDrawTextOptions tOptions = {0};
-    tOptions.ptFont = gptStarter->get_default_font();
-    tOptions.fSize  = fPixelSize;
-    tOptions.uColor = uColor;
-
-    gptDraw->add_3d_text(ptView->pt3dDrawlist, tPosition, pcText, tOptions);
-}
-
-void
-pl_prepare_planet(plPlanet* ptPlanet, plCommandBuffer* ptCmdBuffer)
-{
-    if(ptPlanet->tRequestQueue.ptNext)
-    {
-        gptScreenLog->add_message_ex(294, 10.0, PL_COLOR_32_YELLOW, 1.0f, "Stream Active");
-        pl__handle_residency(ptPlanet, ptCmdBuffer);
-    }
-    else
-    {
-        gptScreenLog->add_message_ex(294, 10.0, PL_COLOR_32_RED, 1.0f, "Stream Inactive");
-    }
-}
-
-plPlanetStreamStats
-pl_planet_get_stream_stats(plPlanet* ptPlanet)
-{
-    plPlanetStreamStats tStats = {0};
-    if(!ptPlanet)
-        return tStats;
-
-    for(plPlanetResidencyNode* ptRequest = ptPlanet->tRequestQueue.ptNext; ptRequest; ptRequest = ptRequest->ptNext)
-        tStats.uPendingRequests++;
-
-    const uint32_t uFileCount = pl_sb_size(ptPlanet->sbtChunkFiles);
-    for(uint32_t uFileIndex = 0; uFileIndex < uFileCount; uFileIndex++)
-    {
-        plPlanetChunkFile* ptFile = &ptPlanet->sbtChunkFiles[uFileIndex].tFile;
-        tStats.uTotalChunks += ptFile->uChunkCount;
-        if(!ptFile->atChunks)
-            continue;
-        for(uint32_t uChunkIndex = 0; uChunkIndex < ptFile->uChunkCount; uChunkIndex++)
-        {
-            if(ptFile->atChunks[uChunkIndex].ptIndexHole)
-                tStats.uResidentChunks++;
-        }
-    }
-
-    return tStats;
-}
-
-void
-pl_planet_set_runtime_options(plPlanet* ptPlanet, plPlanetRuntimeOptions tOptions)
-{
-    ptPlanet->tRuntimeOptions = tOptions;
-}
-
-plPlanetRuntimeOptions
-pl_planet_get_runtime_options(plPlanet* ptPlanet)
-{
-    return ptPlanet->tRuntimeOptions;
-}
-
-void
-pl_planet_set_view_runtime_options(plPlanetView* ptPlanet, plPlanetViewRuntimeOptions tOptions)
-{
-    ptPlanet->tRuntimeOptions = tOptions;
-}
-
-plPlanetViewRuntimeOptions
-pl_planet_get_view_runtime_options(plPlanetView* ptPlanet)
-{
-    return ptPlanet->tRuntimeOptions;
-}
-
-//-----------------------------------------------------------------------------
-// [SECTION] internal api implementation
-//-----------------------------------------------------------------------------
-
-static void
-pl__unload_children(plPlanet* ptPlanet, plPlanetChunk* ptChunk)
-{
-    if(ptChunk->aptChildren[0] == NULL)
-        return;
-    if(ptChunk->aptChildren[0]->ptIndexHole) pl__make_unresident(ptPlanet, ptChunk->aptChildren[0]);
-    if(ptChunk->aptChildren[1]->ptIndexHole) pl__make_unresident(ptPlanet, ptChunk->aptChildren[1]);
-    if(ptChunk->aptChildren[2]->ptIndexHole) pl__make_unresident(ptPlanet, ptChunk->aptChildren[2]);
-    if(ptChunk->aptChildren[3]->ptIndexHole) pl__make_unresident(ptPlanet, ptChunk->aptChildren[3]);
-}
-
-bool
-pl__all_children_resident(plPlanetChunk* ptChunk)
-{
-    if(ptChunk->aptChildren[0] == NULL)
-        return false;
-    if(ptChunk->aptChildren[0]->ptIndexHole == NULL) return false;
-    if(ptChunk->aptChildren[1]->ptIndexHole == NULL) return false;
-    if(ptChunk->aptChildren[2]->ptIndexHole == NULL) return false;
-    if(ptChunk->aptChildren[3]->ptIndexHole == NULL) return false;
-    return true;
-}
-
-
-
-// void
-// pl__remove_from_replacement_queue(plPlanet* ptPlanet, plPlanetChunk* ptChunk)
-// {
-//     plPlanetChunk* ptCurrentRequest = ptPlanet->tReplacementQueue.ptNext;
-
-//     plPlanetChunk* ptExistingRequest = NULL;
-//     plPlanetChunk* ptLastRequest = NULL;
-
-//     while(ptCurrentRequest)
-//     {
-//         if(ptCurrentRequest == ptChunk)
-//         {
-//             ptExistingRequest = ptCurrentRequest;
-//             break;
-//         }
-//         ptCurrentRequest = ptCurrentRequest->ptNext;
-//     }
-
-//     if(ptExistingRequest)
-//     {
-
-//         // remove node
-//         if(ptExistingRequest->ptPrev)
-//             ptExistingRequest->ptPrev->ptNext = ptExistingRequest->ptNext;
-//         else
-//             ptPlanet->tReplacementQueue.ptNext = ptExistingRequest->ptNext;
-
-//         if(ptExistingRequest->ptNext)
-//             ptExistingRequest->ptNext->ptPrev = ptExistingRequest->ptPrev;
-//     }
-// }
-
-static void
-pl__free_chunk(plPlanet* ptPlanet, uint64_t uIndexCount)
-{
-
-    const uint64_t uCurrentFrame = gptIOI->get_io()->ulFrameCount;
-
-    // find tail (least-recently used)
-    plPlanetChunk* tail = ptPlanet->tReplacementQueue.ptNext;
-    if (!tail) {
-        // nothing to evict -> dead end
-        printf("Couldn't free chunks (replacement list empty)\n");
-        return;
-    }
-    while (tail->ptNext) tail = tail->ptNext;
-
-    // Pass 1: try to evict a chunk that fully satisfies the need by size
-
-    uint64_t freed = 0;
-    // move to tail
-    plPlanetChunk* c = ptPlanet->tReplacementQueue.ptNext;
-    if (!c) return;
-    while (c->ptNext) c = c->ptNext;
-
-    while (c && freed < uIndexCount)
-    {
-        plPlanetChunk* prev = c->ptPrev;
-        freed += c->uIndexCount;
-        pl__make_unresident(ptPlanet, c);
-        c = prev;
-    }
-
-    if (freed >= uIndexCount)
+    if(!gptCtx || !gptGfx || !gptCtx->ptDevice)
         return;
 
+    if(gptCtx->tRenderPassLayout.uData)
+        gptGfx->destroy_render_pass_layout(gptCtx->ptDevice, gptCtx->tRenderPassLayout);
+    gptCtx->tRenderPassLayout = (plRenderPassLayoutHandle){0};
+    gptCtx->ptDevice = NULL;
+}
 
-    // Pass 2: age-based eviction
-    for (c = tail; c; c = c->ptPrev)
-    {
-        if (uCurrentFrame - c->uLastFrameUsed > 30)
-        {
-            pl__make_unresident(ptPlanet, c);
-            return;
-        }
-    }
+static plPlanetManifest*
+pl_planet_create_manifest(plPlanetManifestInit init)
+{
+    if(init.dRadius <= 0.0)
+        return NULL;
+    if(init.uTileSize == 0)
+        init.uTileSize = 257;
+    if(init.tTilingMode != PL_PLANET_TILING_CUBE_SPHERE)
+        return NULL;
 
-    // Pass 3 (fallback): evict strictly by LRU, even if it was recently used.
-    // This prevents deadlock when memory is insufficient to hold both parent and child.
-    pl__make_unresident(ptPlanet, tail);
+    plPlanetManifest* manifest = (plPlanetManifest*)PL_ALLOC(sizeof(plPlanetManifest));
+    if(!manifest)
+        return NULL;
 
+    memset(manifest, 0, sizeof(*manifest));
+    manifest->tInit = init;
+    return manifest;
 }
 
 static void
-pl__free_chunk_until(plPlanet* P, uint64_t idx_bytes_needed, uint64_t vtx_bytes_needed)
+pl_planet_cleanup_manifest(plPlanetManifest* manifest)
 {
-
-
-    // Frees resident chunks until BOTH index and vertex requirements are satisfied.
-    // Policy:
-    // 1. Prefer leaf, non-root chunks (safe eviction)
-    // 2. Prefer older chunks (age-based)
-    // 3. Final fallback: evict any non-root to guarantee forward progress
-
-    // Walk to tail (oldest / least-recently-used)
-    plPlanetChunk* tail = P->tReplacementQueue.ptNext;
-    if (!tail)
-    {
-        printf("Couldn't free chunks (replacement list empty)\n");
-        return;
-    }
-    while (tail->ptNext) tail = tail->ptNext;
-
-    uint64_t freed_idx = 0;
-    uint64_t freed_vtx = 0;
-
-    // Pass 1: strictly leaf, non-root, LRU → MRU until enough bytes
-    for (plPlanetChunk* c = tail; c; c = c->ptPrev)
-    {
-        if (!c->ptIndexHole) continue;            // not resident -> skip
-        if (c->uLevel == 0) continue;             // keep roots
-        if (!pl__is_leaf_resident(c)) continue;   // don't drop nodes with resident children
-
-        freed_idx += (uint64_t)c->uIndexCount * sizeof(uint32_t);
-        freed_vtx += (uint64_t)c->ptVertexHole->uSize; // size was requested to freelist; safe to use
-
-        pl__make_unresident(P, c);
-
-        if (freed_idx >= idx_bytes_needed && freed_vtx >= vtx_bytes_needed)
-            return; // sufficient
-    }
-
-    // Pass 2: allow evicting non-leaf (still avoid root). Prefer aged items.
-    const uint64_t now = gptIOI->get_io()->ulFrameCount;
-    for (plPlanetChunk* c = tail; c; c = c->ptPrev)
-    {
-        if (!c->ptIndexHole) continue;
-        if (c->uLevel == 0) continue;
-        if (now - c->uLastFrameUsed <= 30) continue;
-
-        freed_idx += (uint64_t)c->uIndexCount * sizeof(uint32_t);
-        freed_vtx += (uint64_t)c->ptVertexHole->uSize;
-        pl__make_unresident(P, c);
-
-        if (freed_idx >= idx_bytes_needed && freed_vtx >= vtx_bytes_needed)
-            return; // sufficient
-    }
-
-    // Pass 3: final fallback — evict oldest non-root regardless of age/leaf.
-    for (plPlanetChunk* c = tail; c; c = c->ptPrev)
-    {
-        if (!c->ptIndexHole) continue;
-        if (c->uLevel == 0) continue;
-
-        pl__make_unresident(P, c);
-        return; // free at least one to make progress
-    }
-
-    // If we reached here, nothing could be evicted (only root is resident)
-    printf("Eviction failed: only root or no resident chunks available\n");
-}
-
-
-void
-pl__remove_from_residency_queue(plPlanet* ptPlanet, plPlanetChunk* ptChunk)
-{
-    plPlanetResidencyNode* ptCurrentRequest = ptPlanet->tRequestQueue.ptNext;
-
-    plPlanetResidencyNode* ptExistingRequest = NULL;
-    plPlanetResidencyNode* ptLastRequest = NULL;
-
-    while(ptCurrentRequest)
-    {
-        if(ptCurrentRequest->ptChunk == ptChunk)
-        {
-            ptExistingRequest = ptCurrentRequest;
-            break;
-        }
-        ptCurrentRequest = ptCurrentRequest->ptNext;
-    }
-
-    if(ptExistingRequest)
-    {
-
-        // remove node
-        if(ptExistingRequest->ptPrev)
-            ptExistingRequest->ptPrev->ptNext = ptExistingRequest->ptNext;
-        else
-            ptPlanet->tRequestQueue.ptNext = ptExistingRequest->ptNext;
-
-        if(ptExistingRequest->ptNext)
-            ptExistingRequest->ptNext->ptPrev = ptExistingRequest->ptPrev;
-
-        uint32_t uIndex = (uint32_t)(ptExistingRequest - &ptPlanet->atRequests[0]);
-        pl_sb_push(ptPlanet->sbuFreeRequests, uIndex);
-    }
-}
-
-static void
-pl__make_unresident(plPlanet* ptPlanet, plPlanetChunk* ptChunk)
-{
-    pl__remove_from_residency_queue(ptPlanet, ptChunk);
-    pl__remove_from_replacement_queue(ptPlanet, ptChunk);
-    if(ptChunk->ptIndexHole && ptChunk->uIndexCount > 0)
-    {
-
-        // if(ptPlanet->sbtChunkFiles[ptChunk->uFileID].ptPakFile)
-        // {
-        //     pl_sb_sprintf(gptCtx->sbcScratchBuffer, "%s/%u_tile_%u.png", ptPlanet->sbtChunkFiles[ptChunk->uFileID].acPakFileName, ptChunk->uFileID, ptChunk->uIndex);
-        //     plResourceHandle tTextureResource = gptResource->load_ex(
-        //         gptCtx->sbcScratchBuffer,
-        //         PL_RESOURCE_LOAD_FLAG_NO_CACHING, NULL, 0,
-        //         ptPlanet->sbtChunkFiles[ptChunk->uFileID].acPakFileName, 0);
-        //     plTextureHandle tTexture = gptResource->get_texture(tTextureResource);
-        //     pl__planet_return_bindless_texture_index(tTexture);
-        //     ptChunk->uTextureIndex = 0;
-        //     pl_sb_reset(gptCtx->sbcScratchBuffer);
-        //     gptResource->evict(tTextureResource);
-        // }
-
-        if(ptChunk->ptIndexHole)
-            gptFreeList->return_node(&ptPlanet->tIndexBufferManager, ptChunk->ptIndexHole);
-        if(ptChunk->ptVertexHole)
-            gptFreeList->return_node(&ptPlanet->tVertexBufferManager, ptChunk->ptVertexHole);
-        ptChunk->uIndexCount = 0;
-        ptChunk->uLastFrameUsed = 0;
-        ptChunk->ptIndexHole = NULL;
-        ptChunk->ptVertexHole = NULL;
-        ptChunk->ptVertexHole = NULL;
-        if(ptChunk->aptChildren[0] != NULL)
-        {
-            pl__make_unresident(ptPlanet, ptChunk->aptChildren[0]);
-            pl__make_unresident(ptPlanet, ptChunk->aptChildren[1]);
-            pl__make_unresident(ptPlanet, ptChunk->aptChildren[2]);
-            pl__make_unresident(ptPlanet, ptChunk->aptChildren[3]);
-        }
-    }
-}
-
-static void
-pl__handle_residency(plPlanet* ptPlanet, plCommandBuffer* ptCommandBuffer)
-{
-    const uint64_t uCurrentFrame = gptIOI->get_io()->ulFrameCount;
-
-    plPlanetResidencyNode* ptCurrentRequest = ptPlanet->tRequestQueue.ptNext;
-    // ptCurrentRequest->uFrameRequested
-
-    if(ptCurrentRequest)
-    {
-
-        plPlanetChunk* ptChunk = ptCurrentRequest->ptChunk;
-
-        FILE* ptDataFile = fopen(ptPlanet->sbtChunkFiles[ptChunk->uFileID].tFile.acFile, "rb");
-        fseek(ptDataFile, (long)ptChunk->szFileLocation, SEEK_SET);
-
-        if(ptPlanet->sbtChunkFiles[ptChunk->uFileID].tFile.tVersion.uMinor > 2) // new path
-            fseek(ptDataFile, sizeof(plVec3d) * 4 + sizeof(int) * 4, SEEK_CUR);
-        else // old path
-            fseek(ptDataFile, sizeof(plVec3) * 4 + sizeof(int) * 4, SEEK_CUR);
-
-        uint32_t uVertexCount = 0;
-        fread(&uVertexCount, 1, sizeof(uint32_t), ptDataFile);
-
-        void* ptVertices = PL_ALLOC(uVertexCount * ptPlanet->szVertexSize);
-        fread(ptVertices, 1, ptPlanet->szVertexSize * uVertexCount, ptDataFile);
-
-        uint32_t uIndexCount = 0;
-        fread(&uIndexCount, 1, sizeof(uint32_t), ptDataFile);
-
-        uint32_t* ptIndices = PL_ALLOC(uIndexCount * sizeof(uint32_t));
-        fread(ptIndices, 1, sizeof(uint32_t) * uIndexCount, ptDataFile);
-
-        // bytes needed for this chunk
-        const uint64_t idx_bytes = (uint64_t)uIndexCount * sizeof(uint32_t);
-        const uint64_t vtx_bytes = (uint64_t)uVertexCount * ptPlanet->szVertexSize;
-
-        const uint64_t uVertexStageOffset = idx_bytes;
-        const uint64_t uIndexStageOffset = 0;
-
-        // Try once
-        plFreeListNode* idx_hole = gptFreeList->get_node(&ptPlanet->tIndexBufferManager, idx_bytes);
-        plFreeListNode* vtx_hole = gptFreeList->get_node(&ptPlanet->tVertexBufferManager, vtx_bytes);
-
-        if (!idx_hole || !vtx_hole)
-        {
-            if (idx_hole) gptFreeList->return_node(&ptPlanet->tIndexBufferManager, idx_hole);
-            if (vtx_hole) gptFreeList->return_node(&ptPlanet->tVertexBufferManager, vtx_hole);
-
-            // Free enough for BOTH pools and try again
-            pl__free_chunk_until(ptPlanet, idx_bytes, vtx_bytes);
-
-            idx_hole = gptFreeList->get_node(&ptPlanet->tIndexBufferManager, idx_bytes);
-            vtx_hole = gptFreeList->get_node(&ptPlanet->tVertexBufferManager, vtx_bytes);
-        }
-
-        if (!idx_hole || !vtx_hole)
-        {
-            if (idx_hole) gptFreeList->return_node(&ptPlanet->tIndexBufferManager, idx_hole);
-            if (vtx_hole) gptFreeList->return_node(&ptPlanet->tVertexBufferManager, vtx_hole);
-
-            PL_FREE(ptVertices);
-            PL_FREE(ptIndices);
-            fclose(ptDataFile);
-            printf("No Memory (post-eviction)\n");
-            return;
-        }
-
-        ptChunk->ptIndexHole = idx_hole;
-        ptChunk->ptVertexHole = vtx_hole;
-        ptChunk->uIndexCount  = uIndexCount;
-
-        // update buffer offsets
-
-        plDevice* ptDevice = gptCtx->ptDevice;
-        plBuffer* ptStagingBuffer = gptGfx->get_buffer(ptDevice, gptCtx->tStagingBuffer);
-
-        void* ptIndexStageDest = &ptStagingBuffer->tMemoryAllocation.pHostMapped[uIndexStageOffset];
-        void* ptVertexStageDest = &ptStagingBuffer->tMemoryAllocation.pHostMapped[uVertexStageOffset];
-
-        // copy memory to mapped staging buffer
-        memcpy(ptIndexStageDest, ptIndices, idx_bytes);
-        memcpy(ptVertexStageDest, ptVertices, vtx_bytes);
-
-        // destination offsets
-        const uint64_t uIndexFinalOffset = ptChunk->ptIndexHole->uOffset;
-        const uint64_t uVertexFinalOffset = ptChunk->ptVertexHole->uOffset;
-
-        // begin blit pass, copy buffer, end pass
-        // NOTE: we are using the starter extension to get a blit encoder, later examples we will
-        //       handle this ourselves
-        plBlitEncoder* ptEncoder = gptGfx->begin_blit_pass(ptCommandBuffer);
-        gptGfx->pipeline_barrier_blit(ptEncoder, PL_PIPELINE_STAGE_VERTEX_SHADER | PL_PIPELINE_STAGE_COMPUTE_SHADER | PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_SHADER_READ | PL_ACCESS_TRANSFER_READ, PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_TRANSFER_WRITE);
-
-        gptGfx->copy_buffer(ptEncoder, gptCtx->tStagingBuffer, ptPlanet->tIndexBuffer, uIndexStageOffset, uIndexFinalOffset, idx_bytes);
-        gptGfx->copy_buffer(ptEncoder, gptCtx->tStagingBuffer, ptPlanet->tVertexBuffer, uVertexStageOffset, uVertexFinalOffset, vtx_bytes);
-
-        gptGfx->pipeline_barrier_blit(ptEncoder, PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_TRANSFER_WRITE, PL_PIPELINE_STAGE_VERTEX_SHADER | PL_PIPELINE_STAGE_COMPUTE_SHADER | PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_SHADER_READ | PL_ACCESS_TRANSFER_READ);
-        gptGfx->end_blit_pass(ptEncoder);
-        // gptGfx->queue_buffer_for_deletion(ptDevice, tStagingBuffer);
-
-        PL_FREE(ptVertices);
-        PL_FREE(ptIndices);
-
-        fclose(ptDataFile);
-
-        pl__remove_from_residency_queue(ptPlanet, ptCurrentRequest->ptChunk);
-        pl__touch_chunk(ptPlanet, ptChunk);
-    }
-}
-
-static inline void
-pl__lru_unlink(plPlanet* P, plPlanetChunk* c)
-{
-    if (!c->bInReplacementList) return;
-    if (c->ptPrev) c->ptPrev->ptNext = c->ptNext;
-    else           P->tReplacementQueue.ptNext = c->ptNext;
-    if (c->ptNext) c->ptNext->ptPrev = c->ptPrev;
-    c->ptPrev = c->ptNext = NULL;
-    c->bInReplacementList = false;
-}
-
-static inline void
-pl__lru_push_front(plPlanet* P, plPlanetChunk* c)
-{
-    // Head insert
-    c->ptPrev = NULL;
-    c->ptNext = P->tReplacementQueue.ptNext;
-    if (c->ptNext) c->ptNext->ptPrev = c;
-    P->tReplacementQueue.ptNext = c;
-    c->bInReplacementList = true;
-}
-
-
-static void
-pl__touch_chunk(plPlanet* P, plPlanetChunk* c)
-{
-    if (!c) return;
-    c->uLastFrameUsed = gptIOI->get_io()->ulFrameCount;
-
-    pl__lru_unlink(P, c);
-    pl__lru_push_front(P, c);
-}
-
-void
-pl__remove_from_replacement_queue(plPlanet* ptPlanet, plPlanetChunk* ptChunk)
-{
-    pl__lru_unlink(ptPlanet, ptChunk);
-}
-
-static void
-pl__request_residency(plPlanet* ptPlanet, plPlanetChunk* ptChunk)
-{
-    if(ptChunk == NULL)
+    if(!manifest)
         return;
 
-    if(ptChunk->ptIndexHole == NULL)
-    {
-        plPlanetResidencyNode* ptCurrentRequest = ptPlanet->tRequestQueue.ptNext;
-
-        plPlanetResidencyNode* ptExistingRequest = NULL;
-        plPlanetResidencyNode* ptLastRequest = NULL;
-
-        while(ptCurrentRequest)
-        {
-            if(ptCurrentRequest->ptChunk == ptChunk)
-            {
-                ptExistingRequest = ptCurrentRequest;
-                break;
-            }
-            if(ptCurrentRequest->ptNext == NULL)
-                ptLastRequest = ptCurrentRequest;
-            ptCurrentRequest = ptCurrentRequest->ptNext;
-        }
-
-        if(ptExistingRequest)
-        {
-
-            // remove node
-            if(ptExistingRequest->ptPrev)
-                ptExistingRequest->ptPrev->ptNext = ptExistingRequest->ptNext;
-
-            if(ptExistingRequest->ptNext)
-                ptExistingRequest->ptNext->ptPrev = ptExistingRequest->ptPrev;
-        }
-        else
-        {
-            if(pl_sb_size(ptPlanet->sbuFreeRequests) > 0)
-            {
-                uint32_t uNewIndex = pl_sb_pop(ptPlanet->sbuFreeRequests);
-                ptExistingRequest = &ptPlanet->atRequests[uNewIndex];
-
-            }
-            else if(ptLastRequest)
-            {
-                if(ptLastRequest->ptPrev)
-                    ptLastRequest->ptPrev->ptNext = NULL;
-                ptExistingRequest = ptLastRequest;
-            }
-            else
-            {
-                PL_ASSERT(false);
-            }
-        }
-
-        // place node at beginning
-        ptExistingRequest->ptPrev = NULL;
-        if(ptExistingRequest != ptPlanet->tRequestQueue.ptNext)
-            ptExistingRequest->ptNext = ptPlanet->tRequestQueue.ptNext;
-        ptPlanet->tRequestQueue.ptNext = ptExistingRequest;
-        if(ptExistingRequest->ptNext)
-            ptExistingRequest->ptNext->ptPrev = ptExistingRequest;
-
-        ptExistingRequest->uFrameRequested = gptIOI->get_io()->ulFrameCount;
-        ptExistingRequest->ptChunk = ptChunk;
-    }
-}
-
-#define gfColorStrength 1.0
-static const uint32_t gauColors[16] =
-{
-
-    PL_COLOR_32_RGB(gfColorStrength, 0.0, 0.0),
-    PL_COLOR_32_RGB(0.0, gfColorStrength, 0.0),
-    PL_COLOR_32_RGB(0.0, 0.0, gfColorStrength),
-    PL_COLOR_32_RGB(gfColorStrength, gfColorStrength, 0.0),
-    PL_COLOR_32_RGB(gfColorStrength, 0.0, gfColorStrength),
-    PL_COLOR_32_RGB(0.0, gfColorStrength, gfColorStrength),
-    PL_COLOR_32_RGB(gfColorStrength, gfColorStrength, gfColorStrength),
-    PL_COLOR_32_RGB(gfColorStrength * 4, gfColorStrength, gfColorStrength),
-    PL_COLOR_32_RGB(gfColorStrength * 3, 0.0, 0.0),
-    PL_COLOR_32_RGB(0.0, gfColorStrength * 3, 0.0),
-    PL_COLOR_32_RGB(0.0, 0.0, gfColorStrength * 3),
-    PL_COLOR_32_RGB(gfColorStrength * 3, gfColorStrength * 3, 0.0),
-    PL_COLOR_32_RGB(gfColorStrength * 3, 0.0, gfColorStrength * 3),
-    PL_COLOR_32_RGB(0.0, gfColorStrength, gfColorStrength * 3),
-    PL_COLOR_32_RGB(gfColorStrength, gfColorStrength * 3, gfColorStrength * 3),
-    PL_COLOR_32_RGB(gfColorStrength * 7, gfColorStrength, gfColorStrength)
-};
-
-static void
-pl__render_chunk(plPlanetView* ptPlanetView, plCamera* ptCamera , plRenderEncoder* ptEncoder, plPlanetChunk* ptChunk, plPlanetChunkFile* ptFile, const plMat4* ptMVP)
-{
-
-    // Continuous LOD refinement using geometric error metric (ρ).
-    //
-    // Refinement logic:
-    // - Draw parent if children not fully resident
-    // - Draw parent if error below threshold
-    // - Descend if children resident and error large
-    //
-    // Uses hysteresis (τ_split / τ_merge) to avoid thrashing.
-
-    PL_ASSERT(ptChunk != NULL);
-
-    plPlanet* ptPlanet = ptPlanetView->ptPlanet;
-
-    plAABB tAABB = {
-        .tMin = {
-            ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_FLATTEN ? (float)ptChunk->tMinBoundFlat.x : (float)ptChunk->tMinBound.x,
-            ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_FLATTEN ? (float)ptChunk->tMinBoundFlat.y : (float)ptChunk->tMinBound.y,
-            ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_FLATTEN ? (float)ptChunk->tMinBoundFlat.z : (float)ptChunk->tMinBound.z
-        },
-        .tMax = {
-            ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_FLATTEN ? (float)ptChunk->tMaxBoundFlat.x : (float)ptChunk->tMaxBound.x,
-            ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_FLATTEN ? (float)ptChunk->tMaxBoundFlat.y : (float)ptChunk->tMaxBound.y,
-            ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_FLATTEN ? (float)ptChunk->tMaxBoundFlat.z : (float)ptChunk->tMaxBound.z,
-        }
-    };
-
-    if(!pl__sat_visibility_test(ptCamera, &tAABB))
-        return;
-
-    // gptDraw->add_3d_aabb(ptPlanetView->pt3dDrawlist, tAABB.tMin, tAABB.tMax, (plDrawLineOptions){.fThickness = 1000.0f, .uColor = gauColors[ptChunk->uLevel % 16]});
-
-    plVec3 tClosestPoint = gptCollision->point_closest_point_aabb(ptCamera->tPos, tAABB);
-    float fDistance = fabsf(pl_length_vec3(pl_sub_vec3(tClosestPoint, ptCamera->tPos)));
-
-    pl__request_residency(ptPlanet, ptChunk);
-
-    if(ptChunk->ptIndexHole == NULL)
-        return;
-
-    float fViewportWidth = gptIOI->get_io()->tMainViewportSize.x;
-    float fHorizontalFieldOfView = 2.0f * atanf(tanf(0.5f * ptCamera->fFieldOfView) * ptCamera->fAspectRatio);
-
-    float fK = fViewportWidth / (2.0f * tanf(0.5f * fHorizontalFieldOfView));
-
-    float fGeometricError = (float)ptFile->dMaxBaseError * (float)ptChunk->uLevel;
-    float fRho = fGeometricError * fK / fDistance;
-
-    // Hysteresis band
-    float tauSubdivide = ptPlanetView->tRuntimeOptions.fTau;
-    float tauMerge     = tauSubdivide * 0.5f;
-
-    bool bChildrenResident = pl__all_children_resident(ptChunk);
-
-    // Decide refinement using hysteresis
-    if(!bChildrenResident || fRho <= tauSubdivide)
-    {
-        // Draw parent
-        plDevice* ptDevice = gptCtx->ptDevice;
-        plDynamicBinding tDynamicBinding =
-            pl_allocate_dynamic_data(gptGfx, ptDevice, &gptCtx->tCurrentDynamicBufferBlock);
-        plGpuDynPlanetData* ptDynamic = (plGpuDynPlanetData*)tDynamicBinding.pcData;
-
-        ptDynamic->iLevel             = (int)ptChunk->uLevel;
-        ptDynamic->tFlags             = ptPlanetView->tRuntimeOptions.tFlags;
-        ptDynamic->uTextureIndex      = ptPlanet->sbtChunkFiles[ptChunk->uFileID].uTextureIndex;
-        ptDynamic->tLightDirection    = ptPlanet->tRuntimeOptions.tLightDirection;
-        ptDynamic->tUVInfo.xy         = ptChunk->tUVScale;
-        ptDynamic->tUVInfo.zw         = ptChunk->tUVOffset;
-        ptDynamic->fHazardMapStrength = ptPlanetView->tRuntimeOptions.fHazardMapStrength;
-        ptDynamic->fRadius            = (float)ptPlanet->dRadius;
-        pl__planet_split_double(ptCamera->tPosDouble.x, &ptDynamic->tCameraPosHigh.x, &ptDynamic->tCameraPosLow.x);
-        pl__planet_split_double(ptCamera->tPosDouble.y, &ptDynamic->tCameraPosHigh.y, &ptDynamic->tCameraPosLow.y);
-        pl__planet_split_double(ptCamera->tPosDouble.z, &ptDynamic->tCameraPosHigh.z, &ptDynamic->tCameraPosLow.z);
-        ptDynamic->tCameraViewProjection = pl_mul_mat4(&ptCamera->tProjMat, &ptCamera->tViewMatDouble);
-
-
-        ptDynamic->iChunkID = ptChunk->uIndex + ptChunk->uFileID;
-
-        plShaderHandle tShader = {0};
-        if(ptPlanetView->ptPlanet->tInfo.tFlags & PL_PLANET_PROCESSING_FLAGS_DOUBLE_PRECISION)
-            tShader = (ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_WIREFRAME) ? ptPlanetView->tWireframeShaderDouble : ptPlanetView->tShaderDouble;
-        else
-            tShader = (ptPlanetView->tRuntimeOptions.tFlags & PL_PLANET_FLAGS_WIREFRAME) ? ptPlanetView->tWireframeShader : ptPlanetView->tShader;
-
-        gptGfx->bind_graphics_bind_groups(
-            ptEncoder,
-            tShader,
-            0, 0,
-            NULL,
-            1, &tDynamicBinding
-        );
-
-        const plDrawIndex tDraw = {
-            .uInstanceCount = 1,
-            .uIndexCount    = ptChunk->uIndexCount,
-            .uVertexStart   = (uint32_t)(ptChunk->ptVertexHole->uOffset / ptPlanet->szVertexSize),
-            .uIndexStart    = (uint32_t)(ptChunk->ptIndexHole->uOffset / sizeof(uint32_t)),
-            .tIndexBuffer   = ptPlanet->tIndexBuffer
-        };
-
-        gptGfx->draw_indexed(ptEncoder, 1, &tDraw);
-        *gptCtx->pdDrawCalls += 1;
-
-        pl__touch_chunk(ptPlanet, ptChunk);
-
-        // --- Hysteresis refinement logic ---
-        if(fRho > tauSubdivide)
-        {
-            // Need children soon – schedule them
-            for(uint32_t i = 0; i < 4; i++)
-            {
-                if(ptChunk->aptChildren[i])
-                    pl__request_residency(ptPlanet, ptChunk->aptChildren[i]);
-            }
-        }
-        else if(fRho < tauMerge)
-        {
-            // Clearly low detail – unload children
-            pl__unload_children(ptPlanet, ptChunk);
-        }
-        // else: middle band → keep current state, prevent thrash
-    }
-    else
-    {
-        // Descend into children
-        for(uint32_t i = 0; i < 4; i++)
-            pl__render_chunk(ptPlanetView, ptCamera, ptEncoder, ptChunk->aptChildren[i], ptFile, ptMVP);
-    }
-}
-
-static bool
-pl__sat_visibility_test(plCamera* ptCamera, const plAABB* ptAABB)
-{
-    const float fTanFov = tanf(0.5f * ptCamera->fFieldOfView);
-
-    const float fZNear = ptCamera->fNearZ;
-    const float fZFar = ptCamera->fFarZ;
-
-    // half width, half height
-    const float fXNear = ptCamera->fAspectRatio * ptCamera->fNearZ * fTanFov;
-    const float fYNear = ptCamera->fNearZ * fTanFov;
-
-    // consider four adjacent corners of the AABB
-    plVec3 atCorners[] = {
-        {ptAABB->tMin.x, ptAABB->tMin.y, ptAABB->tMin.z},
-        {ptAABB->tMax.x, ptAABB->tMin.y, ptAABB->tMin.z},
-        {ptAABB->tMin.x, ptAABB->tMax.y, ptAABB->tMin.z},
-        {ptAABB->tMin.x, ptAABB->tMin.y, ptAABB->tMax.z},
-    };
-
-    // transform corners
-    for (size_t i = 0; i < 4; i++)
-        atCorners[i] = pl_mul_mat4_vec3(&ptCamera->tViewMat, atCorners[i]);
-
-    // Use transformed atCorners to calculate center, axes and extents
-
-    plOBB2 tObb = {
-        .atAxes = {
-            pl_sub_vec3(atCorners[1], atCorners[0]),
-            pl_sub_vec3(atCorners[2], atCorners[0]),
-            pl_sub_vec3(atCorners[3], atCorners[0])
-        },
-    };
-
-    tObb.tCenter = pl_add_vec3(atCorners[0], pl_mul_vec3_scalarf((pl_add_vec3(tObb.atAxes[0], pl_add_vec3(tObb.atAxes[1], tObb.atAxes[2]))), 0.5f));
-    tObb.tExtents = (plVec3){ pl_length_vec3(tObb.atAxes[0]), pl_length_vec3(tObb.atAxes[1]), pl_length_vec3(tObb.atAxes[2]) };
-
-    // normalize
-    tObb.atAxes[0] = pl_div_vec3_scalarf(tObb.atAxes[0], tObb.tExtents.x);
-    tObb.atAxes[1] = pl_div_vec3_scalarf(tObb.atAxes[1], tObb.tExtents.y);
-    tObb.atAxes[2] = pl_div_vec3_scalarf(tObb.atAxes[2], tObb.tExtents.z);
-    tObb.tExtents = pl_mul_vec3_scalarf(tObb.tExtents, 0.5f);
-
-    // axis along frustum
-    {
-        // Projected center of our OBB
-        const float fMoC = tObb.tCenter.z;
-
-        // Projected size of OBB
-        float fRadius = 0.0f;
-        for (size_t i = 0; i < 3; i++)
-            fRadius += fabsf(tObb.atAxes[i].z) * tObb.tExtents.d[i];
-
-        const float fObbMin = fMoC - fRadius;
-        const float fObbMax = fMoC + fRadius;
-
-        if (fObbMin > fZFar || fObbMax < fZNear)
-            return false;
-    }
-
-
-    // other normals of frustum
-    {
-        const plVec3 atM[] = {
-            { fZNear, 0.0f, fXNear }, // Left Plane
-            { -fZNear, 0.0f, fXNear }, // Right plane
-            { 0.0, -fZNear, fYNear }, // Top plane
-            { 0.0, fZNear, fYNear }, // Bottom plane
-        };
-        for (size_t m = 0; m < 4; m++)
-        {
-            const float fMoX = fabsf(atM[m].x);
-            const float fMoY = fabsf(atM[m].y);
-            const float fMoZ = atM[m].z;
-            const float fMoC = pl_dot_vec3(atM[m], tObb.tCenter);
-
-            float fObbRadius = 0.0f;
-            for (size_t i = 0; i < 3; i++)
-                fObbRadius += fabsf(pl_dot_vec3(atM[m], tObb.atAxes[i])) * tObb.tExtents.d[i];
-
-            const float fObbMin = fMoC - fObbRadius;
-            const float fObbMax = fMoC + fObbRadius;
-
-            const float fP = fXNear * fMoX + fYNear * fMoY;
-
-            float fTau0 = fZNear * fMoZ - fP;
-            float fTau1 = fZNear * fMoZ + fP;
-
-            if (fTau0 < 0.0f)
-                fTau0 *= fZFar / fZNear;
-
-            if (fTau1 > 0.0f)
-                fTau1 *= fZFar / fZNear;
-
-            if (fObbMin > fTau1 || fObbMax < fTau0)
-                return false;
-        }
-    }
-
-    // OBB axes
-    {
-        for (size_t m = 0; m < 3; m++)
-        {
-            const plVec3* ptM = &tObb.atAxes[m];
-            const float fMoX = fabsf(ptM->x);
-            const float fMoY = fabsf(ptM->y);
-            const float fMoZ = ptM->z;
-            const float fMoC = pl_dot_vec3(*ptM, tObb.tCenter);
-
-            const float fObbRadius = tObb.tExtents.d[m];
-
-            const float fObbMin = fMoC - fObbRadius;
-            const float fObbMax = fMoC + fObbRadius;
-
-            // frustum projection
-            const float fP = fXNear * fMoX + fYNear * fMoY;
-            float fTau0 = fZNear * fMoZ - fP;
-            float fTau1 = fZNear * fMoZ + fP;
-
-            if (fTau0 < 0.0f)
-                fTau0 *= fZFar / fZNear;
-
-            if (fTau1 > 0.0f)
-                fTau1 *= fZFar / fZNear;
-
-            if (fObbMin > fTau1 || fObbMax < fTau0)
-                return false;
-        }
-    }
-
-    // cross products between the edges
-    // first R x A_i
-    {
-        for (size_t m = 0; m < 3; m++)
-        {
-            const plVec3 tM = { 0.0f, -tObb.atAxes[m].z, tObb.atAxes[m].y };
-            const float fMoX = 0.0f;
-            const float fMoY = fabsf(tM.y);
-            const float fMoZ = tM.z;
-            const float fMoC = tM.y * tObb.tCenter.y + tM.z * tObb.tCenter.z;
-
-            float fObbRadius = 0.0f;
-            for (size_t i = 0; i < 3; i++)
-                fObbRadius += fabsf(pl_dot_vec3(tM, tObb.atAxes[i])) * tObb.tExtents.d[i];
-
-            const float fObbMin = fMoC - fObbRadius;
-            const float fObbMax = fMoC + fObbRadius;
-
-            // frustum projection
-            const float fP = fXNear * fMoX + fYNear * fMoY;
-            float fTau0 = fZNear * fMoZ - fP;
-            float fTau1 = fZNear * fMoZ + fP;
-
-            if (fTau0 < 0.0f)
-                fTau0 *= fZFar / fZNear;
-
-            if (fTau1 > 0.0f)
-                fTau1 *= fZFar / fZNear;
-
-            if (fObbMin > fTau1 || fObbMax < fTau0)
-                return false;
-        }
-    }
-
-    // U x A_i
-    {
-        for (size_t m = 0; m < 3; m++)
-        {
-            const plVec3 tM = { tObb.atAxes[m].z, 0.0f, -tObb.atAxes[m].x };
-            const float fMoX = fabsf(tM.x);
-            const float fMoY = 0.0f;
-            const float fMoZ = tM.z;
-            const float fMoC = tM.x * tObb.tCenter.x + tM.z * tObb.tCenter.z;
-
-            float fObbRadius = 0.0f;
-            for (size_t i = 0; i < 3; i++)
-                fObbRadius += fabsf(pl_dot_vec3(tM, tObb.atAxes[i])) * tObb.tExtents.d[i];
-
-            const float fObbMin = fMoC - fObbRadius;
-            const float fObbMax = fMoC + fObbRadius;
-
-            // frustum projection
-            const float fP = fXNear * fMoX + fYNear * fMoY;
-            float fTau0 = fZNear * fMoZ - fP;
-            float fTau1 = fZNear * fMoZ + fP;
-
-            if (fTau0 < 0.0f)
-                fTau0 *= fZFar / fZNear;
-
-            if (fTau1 > 0.0f)
-                fTau1 *= fZFar / fZNear;
-
-            if (fObbMin > fTau1 || fObbMax < fTau0)
-                return false;
-        }
-    }
-
-    // frustum Edges X Ai
-    {
-        for (size_t obb_edge_idx = 0; obb_edge_idx < 3; obb_edge_idx++)
-        {
-            const plVec3 atM[] = {
-                pl_cross_vec3((plVec3){-fXNear, 0.0f, fZNear}, tObb.atAxes[obb_edge_idx]), // Left Plane
-                pl_cross_vec3((plVec3){ fXNear, 0.0f, fZNear }, tObb.atAxes[obb_edge_idx]), // Right plane
-                pl_cross_vec3((plVec3){ 0.0f, fYNear, fZNear }, tObb.atAxes[obb_edge_idx]), // Top plane
-                pl_cross_vec3((plVec3){ 0.0, -fYNear, fZNear }, tObb.atAxes[obb_edge_idx]) // Bottom plane
-            };
-
-            for (size_t m = 0; m < 4; m++)
-            {
-                const float fMoX = fabsf(atM[m].x);
-                const float fMoY = fabsf(atM[m].y);
-                const float fMoZ = atM[m].z;
-
-                const float fEpsilon = 1e-4f;
-                if (fMoX < fEpsilon && fMoY < fEpsilon && fabsf(fMoZ) < fEpsilon) continue;
-
-                const float fMoC = pl_dot_vec3(atM[m], tObb.tCenter);
-
-                float fObbRadius = 0.0f;
-                for (size_t i = 0; i < 3; i++)
-                    fObbRadius += fabsf(pl_dot_vec3(atM[m], tObb.atAxes[i])) * tObb.tExtents.d[i];
-
-                const float fObbMin = fMoC - fObbRadius;
-                const float fObbMax = fMoC + fObbRadius;
-
-                // frustum projection
-                const float fP = fXNear * fMoX + fYNear * fMoY;
-                float fTau0 = fZNear * fMoZ - fP;
-                float fTau1 = fZNear * fMoZ + fP;
-
-                if (fTau0 < 0.0f)
-                    fTau0 *= fZFar / fZNear;
-
-                if (fTau1 > 0.0f)
-                    fTau1 *= fZFar / fZNear;
-
-                if (fObbMin > fTau1 || fObbMax < fTau0)
-                    return false;
-            }
-        }
-    }
-
-    // no intersections detected
-    return true;
-}
-
-static bool
-pl__planet_load(plPlanet* ptPlanet, plPlanetProcessInfo* ptInfo, plPlanetLoadFlags tFlags)
-{
-    {
-        // float fLatitude  = (float)pl_radiansd(ptInfo->atTiles[0].dLatitude);
-        // float fLongitude = (float)pl_radiansd(ptInfo->atTiles[0].dLongitude);
-
-        // const float R    = (float)ptPlanet->dRadius;  // lunar radius (meters)
-        // const float k0   = 1.0f;                      // scale factor
-        // const float lon0 = 0.0f;                      // central meridian (radians)
-
-        // // Inputs (radians)
-        // float phi  = fLatitude;
-        // float lam  = fLongitude;
-
-        // // South-pole stereographic
-        // float theta = lam - lon0;
-        // float fR    = 2.0f * R * k0 * tanf(PL_PI_4 + 0.5f * phi);
-
-        // Easting / Northing (northing-positive-up; minus for south polar)
-        float fX = (float)ptInfo->atTiles[0].dOriginX; // * sinf(theta);
-        float fY = (float)ptInfo->atTiles[0].dOriginY; // * cosf(theta);
-
-        ptPlanet->tTopLeftGlobal.x = fX - 0.5f * (float)ptInfo->uSize * (float)ptInfo->dMetersPerPixel;
-        ptPlanet->tTopLeftGlobal.y = fY + 0.5f * (float)ptInfo->uSize * (float)ptInfo->dMetersPerPixel;
-    }
-
-    for(uint32_t k = 0; k < ptInfo->uTileCount; k++)
-    {
-        pl_chlod_load_chunk_file(ptPlanet, ptInfo->atTiles[k].acOutputFile, tFlags);
-    }
-    return true;
-}
-
-static plTextureHandle
-pl__planet_create_texture(plCommandBuffer* ptCmdBuffer, const plTextureDesc* ptDesc, const char* pcName)
-{
-    // for convience
-   plDevice* ptDevice = gptCtx->ptDevice;
-
-    // create texture
-    plTexture* ptTexture = NULL;
-    const plTextureHandle tHandle = gptGfx->create_texture(ptDevice, ptDesc, &ptTexture);
-    pl_temp_allocator_reset(&gptCtx->tTempAllocator);
-
-    // choose allocator
-    plDeviceMemoryAllocatorI* ptAllocator = gptCtx->tLocalBuddyAllocator;
-    if(ptTexture->tMemoryRequirements.ulSize > gptGpuAllocators->get_buddy_block_size())
-        ptAllocator = gptCtx->tLocalDedicatedAllocator;
-
-    // allocate memory
-    const plDeviceMemoryAllocation tAllocation = ptAllocator->allocate(ptAllocator->ptInst,
-        ptTexture->tMemoryRequirements.uMemoryTypeBits,
-        ptTexture->tMemoryRequirements.ulSize,
-        ptTexture->tMemoryRequirements.ulAlignment,
-        pl_temp_allocator_sprintf(&gptCtx->tTempAllocator, "texture alloc %s", pcName));
-
-    // bind memory
-    gptGfx->bind_texture_to_memory(ptDevice, tHandle, &tAllocation);
-    pl_temp_allocator_reset(&gptCtx->tTempAllocator);
-
-    return tHandle;
-}
-
-static plTextureHandle
-pl__planet_create_texture_with_data(const plTextureDesc* ptDesc, const char* pcName, uint32_t uIdentifier, const void* pData, size_t szSize)
-{
-    // for convience
-    plDevice* ptDevice = gptCtx->ptDevice;
-    plCommandPool* ptCmdPool = gptStarter->get_current_command_pool();
-
-    // create texture
-    plTexture* ptTexture = NULL;
-    const plTextureHandle tHandle = gptGfx->create_texture(ptDevice, ptDesc, &ptTexture);
-    pl_temp_allocator_reset(&gptCtx->tTempAllocator);
-
-    // choose allocator
-    plDeviceMemoryAllocatorI* ptAllocator = gptCtx->tLocalBuddyAllocator;
-    if(ptTexture->tMemoryRequirements.ulSize > gptGpuAllocators->get_buddy_block_size())
-        ptAllocator = gptCtx->tLocalDedicatedAllocator;
-
-    // allocate memory
-    const plDeviceMemoryAllocation tAllocation = ptAllocator->allocate(ptAllocator->ptInst,
-        ptTexture->tMemoryRequirements.uMemoryTypeBits,
-        ptTexture->tMemoryRequirements.ulSize,
-        ptTexture->tMemoryRequirements.ulAlignment,
-        pl_temp_allocator_sprintf(&gptCtx->tTempAllocator, "texture alloc %s: %u", pcName, uIdentifier));
-
-    // bind memory
-    gptGfx->bind_texture_to_memory(ptDevice, tHandle, &tAllocation);
-    pl_temp_allocator_reset(&gptCtx->tTempAllocator);
-
-    plCommandBuffer* ptCommandBuffer = gptGfx->request_command_buffer(ptCmdPool, "create texture 2");
-    gptGfx->begin_command_recording(ptCommandBuffer, NULL);
-    plBlitEncoder* ptBlitEncoder = gptGfx->begin_blit_pass(ptCommandBuffer);
-    // gptGfx->pipeline_barrier_blit(ptBlitEncoder, PL_PIPELINE_STAGE_VERTEX_SHADER | PL_PIPELINE_STAGE_COMPUTE_SHADER | PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_SHADER_READ | PL_ACCESS_TRANSFER_READ, PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_TRANSFER_WRITE);
-    gptGfx->set_texture_usage(ptBlitEncoder, tHandle, PL_TEXTURE_USAGE_SAMPLED, 0);
-
-
-    // if data is presented, upload using staging buffer
-    if(pData)
-    {
-        PL_ASSERT(ptDesc->uLayers == 1); // this is for simple textures right now
-
-        // create staging buffer
-        const plBufferDesc tStagingBufferDesc = {
-            .tUsage      = PL_BUFFER_USAGE_TRANSFER_SOURCE,
-            .szByteSize  = szSize,
-            .pcDebugName = "temp staging buffer"
-        };
-        plBuffer* ptBuffer = NULL;
-        plBufferHandle tStagingBuffer = gptGfx->create_buffer(ptDevice, &tStagingBufferDesc, &ptBuffer);
-
-        // allocate memory for the vertex buffer
-        const plDeviceMemoryAllocation tStagingBufferAllocation = gptGfx->allocate_memory(ptDevice,
-            ptBuffer->tMemoryRequirements.ulSize,
-            PL_MEMORY_FLAGS_HOST_VISIBLE | PL_MEMORY_FLAGS_HOST_COHERENT,
-            ptBuffer->tMemoryRequirements.uMemoryTypeBits,
-            "temp staging memory");
-
-        gptGfx->bind_buffer_to_memory(ptDevice, tStagingBuffer, &tStagingBufferAllocation);
-        memcpy(ptBuffer->tMemoryAllocation.pHostMapped, pData, szSize);
-
-        const plBufferImageCopy tBufferImageCopy = {
-            .uImageWidth = (uint32_t)ptDesc->tDimensions.x,
-            .uImageHeight = (uint32_t)ptDesc->tDimensions.y,
-            .uImageDepth = 1,
-            .uLayerCount = 1
-        };
-
-        gptGfx->copy_buffer_to_texture(ptBlitEncoder, tStagingBuffer, tHandle, 1, &tBufferImageCopy);
-        gptGfx->generate_mipmaps(ptBlitEncoder, tHandle);
-        gptGfx->queue_buffer_for_deletion(ptDevice, tStagingBuffer);
-    }
-
-    // gptGfx->pipeline_barrier_blit(ptBlitEncoder, PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_TRANSFER_WRITE, PL_PIPELINE_STAGE_VERTEX_SHADER | PL_PIPELINE_STAGE_COMPUTE_SHADER | PL_PIPELINE_STAGE_TRANSFER, PL_ACCESS_SHADER_READ | PL_ACCESS_TRANSFER_READ);
-    gptGfx->end_blit_pass(ptBlitEncoder);
-    gptGfx->end_command_recording(ptCommandBuffer);
-    gptGfx->submit_command_buffer(ptCommandBuffer, NULL);
-    gptGfx->wait_on_command_buffer(ptCommandBuffer);
-    gptGfx->return_command_buffer(ptCommandBuffer);
-    return tHandle;
-}
-
-static void
-pl__planet_return_bindless_texture_index(plTextureHandle tTexture)
-{
-    uint64_t uIndex = 0;
-    if(pl_hm_has_key_ex(&gptCtx->tTextureIndexHashmap, tTexture.uData, &uIndex))
-    {
-        pl_hm_remove(&gptCtx->tTextureIndexHashmap, tTexture.uData);
-    }
+    if(manifest->atSources)
+        PL_FREE(manifest->atSources);
+    if(manifest->atTiles)
+        PL_FREE(manifest->atTiles);
+    PL_FREE(manifest);
 }
 
 static uint32_t
-pl__planet_get_bindless_texture_index(plTextureHandle tTexture)
+pl_planet_add_source(plPlanetManifest* manifest, plPlanetSourceRecord source)
 {
+    if(!manifest)
+        return UINT32_MAX;
+    if(!pl__planet_reserve_sources(manifest, manifest->uSourceCount + 1u))
+        return UINT32_MAX;
 
-    uint64_t uIndex = 0;
-    if(pl_hm_has_key_ex(&gptCtx->tTextureIndexHashmap, tTexture.uData, &uIndex))
-        return (uint32_t)uIndex;
-
-    uint64_t ulValue = pl_hm_get_free_index(&gptCtx->tTextureIndexHashmap);
-    if(ulValue == PL_DS_HASH_INVALID)
+    source.dMinLongitude = pl__planet_normalize_lon(source.dMinLongitude);
+    source.dMaxLongitude = pl__planet_normalize_lon(source.dMaxLongitude);
+    if(source.dMinLatitude > source.dMaxLatitude)
     {
-        PL_ASSERT(gptCtx->uTextureIndexCount < PL_PLANET_MAX_BINDLESS_TEXTURES);
-        ulValue = gptCtx->uTextureIndexCount++;
-
-        // TODO: handle when greater than 4096
+        const double tmp = source.dMinLatitude;
+        source.dMinLatitude = source.dMaxLatitude;
+        source.dMaxLatitude = tmp;
     }
-    pl_hm_insert(&gptCtx->tTextureIndexHashmap, tTexture.uData, ulValue);
 
-    const plBindGroupUpdateTextureData tGlobalTextureData[] = {
+    const uint32_t index = manifest->uSourceCount++;
+    manifest->atSources[index] = source;
+    manifest->bFinalized = false;
+    return index;
+}
+
+static bool
+pl_planet_add_tile(plPlanetManifest* manifest, plPlanetTileRecord tile)
+{
+    if(!manifest || !pl__planet_valid_address(tile.tAddress))
+        return false;
+    if(tile.uSourceIndex != UINT32_MAX && tile.uSourceIndex >= manifest->uSourceCount)
+        return false;
+    if(tile.tAddress.uLod > manifest->tInit.uMaxLod)
+        return false;
+    if(!pl__planet_reserve_tiles(manifest, manifest->uTileCount + 1u))
+        return false;
+
+    tile.tFlags |= PL_PLANET_TILE_FLAGS_AVAILABLE;
+    manifest->atTiles[manifest->uTileCount++] = tile;
+    manifest->bFinalized = false;
+    return true;
+}
+
+static void
+pl_planet_finalize_manifest(plPlanetManifest* manifest)
+{
+    if(!manifest || manifest->uTileCount == 0)
+    {
+        if(manifest)
+            manifest->bFinalized = true;
+        return;
+    }
+
+    qsort(manifest->atTiles, manifest->uTileCount, sizeof(plPlanetTileRecord), pl__planet_compare_tile_records);
+    manifest->bFinalized = true;
+}
+
+static bool
+pl_planet_resolve_tile_path(const plPlanetManifest* manifest, const plPlanetTileRecord* tile, char* outPath, uint32_t outPathSize);
+
+static bool
+pl_planet_read_chunk_header(const char* path, plPlanetChunkHeader* outHeader);
+
+static plPlanetManifest*
+pl_planet_load_manifest_json(const char* path, bool validatePayloads)
+{
+    char* jsonText = NULL;
+    if(!pl__planet_read_file_text(path, &jsonText))
+        return NULL;
+
+    plJsonObject* root = NULL;
+    if(!pl_load_json(jsonText, &root))
+    {
+        PL_FREE(jsonText);
+        return NULL;
+    }
+
+    char schema[32] = {0};
+    pl_json_string_member(root, "schema", schema, sizeof(schema));
+    if(strcmp(schema, "planet") != 0)
+    {
+        pl_unload_json(&root);
+        PL_FREE(jsonText);
+        return NULL;
+    }
+
+    plPlanetManifestInit init = {
+        .dRadius = pl_json_double_member(root, "radius", 0.0),
+        .uTileSize = (uint32_t)pl_json_int_member(root, "tile_size", 0),
+        .uMaxLod = (uint8_t)pl_json_int_member(root, "max_lod", 0),
+        .tTilingMode = PL_PLANET_TILING_CUBE_SPHERE,
+        .tFlags = PL_PLANET_MANIFEST_FLAGS_NONE
+    };
+
+    plPlanetManifest* manifest = pl_planet_create_manifest(init);
+    if(!manifest)
+    {
+        pl_unload_json(&root);
+        PL_FREE(jsonText);
+        return NULL;
+    }
+
+    pl__planet_copy_string(manifest->acManifestPath, sizeof(manifest->acManifestPath), path);
+    pl__planet_dirname(path, manifest->acBasePath, sizeof(manifest->acBasePath));
+    manifest->bPayloads = pl_json_bool_member(root, "payloads", false);
+    pl_json_string_member(root, "payload_format", manifest->acPayloadFormat, sizeof(manifest->acPayloadFormat));
+    pl_json_string_member(root, "height_mode", manifest->acHeightMode, sizeof(manifest->acHeightMode));
+
+    uint32_t sourceCount = 0;
+    plJsonObject* sources = pl_json_array_member(root, "sources", &sourceCount);
+    if(!sources && sourceCount == 0)
+    {
+        pl_planet_cleanup_manifest(manifest);
+        pl_unload_json(&root);
+        PL_FREE(jsonText);
+        return NULL;
+    }
+
+    for(uint32_t i = 0; i < sourceCount; i++)
+    {
+        plJsonObject* obj = pl_json_member_by_index(sources, i);
+        if(!obj)
+            continue;
+
+        plPlanetSourceRecord source = {0};
+        pl_json_string_member(obj, "name", source.acName, sizeof(source.acName));
+        pl_json_string_member(obj, "path", source.acPath, sizeof(source.acPath));
+        source.tFlags = pl_json_int_member(obj, "flags", 0);
+        source.uPriority = pl_json_int_member(obj, "priority", 0);
+        source.dNativeMetersPerPixel = pl_json_double_member(obj, "native_meters_per_pixel", 0.0);
+        source.dMinHeight = pl_json_double_member(obj, "min_height", 0.0);
+        source.dMaxHeight = pl_json_double_member(obj, "max_height", 0.0);
+
+        plJsonObject* footprint = pl_json_member(obj, "footprint");
+        if(footprint)
         {
-            .tTexture = tTexture,
-            .uSlot    = 1,
-            .uIndex   = (uint32_t)ulValue,
-            .tType = PL_TEXTURE_BINDING_TYPE_SAMPLED
+            source.dMinLatitude = pl_json_double_member(footprint, "min_latitude", 0.0);
+            source.dMaxLatitude = pl_json_double_member(footprint, "max_latitude", 0.0);
+            source.dMinLongitude = pl_json_double_member(footprint, "min_longitude", 0.0);
+            source.dMaxLongitude = pl_json_double_member(footprint, "max_longitude", 0.0);
+        }
+
+        if(pl_planet_add_source(manifest, source) == UINT32_MAX)
+        {
+            pl_planet_cleanup_manifest(manifest);
+            pl_unload_json(&root);
+            PL_FREE(jsonText);
+            return NULL;
+        }
+    }
+
+    uint32_t tileCount = 0;
+    plJsonObject* tiles = pl_json_array_member(root, "tiles", &tileCount);
+    if(!tiles && tileCount == 0)
+    {
+        pl_planet_cleanup_manifest(manifest);
+        pl_unload_json(&root);
+        PL_FREE(jsonText);
+        return NULL;
+    }
+
+    for(uint32_t i = 0; i < tileCount; i++)
+    {
+        plJsonObject* obj = pl_json_member_by_index(tiles, i);
+        if(!obj)
+            continue;
+
+        plPlanetTileRecord tile = {0};
+        tile.tAddress.tFace = pl_json_int_member(obj, "face", -1);
+        tile.tAddress.uLod = (uint8_t)pl_json_int_member(obj, "lod", 0);
+        tile.tAddress.uX = (uint32_t)pl_json_int_member(obj, "x", 0);
+        tile.tAddress.uY = (uint32_t)pl_json_int_member(obj, "y", 0);
+        tile.uSourceIndex = (uint32_t)pl_json_int_member(obj, "source", 0);
+        tile.dGeometricError = pl_json_double_member(obj, "geometric_error", 0.0);
+        tile.dMinHeight = pl_json_double_member(obj, "min_height", 0.0);
+        tile.dMaxHeight = pl_json_double_member(obj, "max_height", 0.0);
+        pl_json_string_member(obj, "file", tile.acChunkFile, sizeof(tile.acChunkFile));
+        tile.ulByteOffset = (uint64_t)pl_json_uint_member(obj, "byte_offset", 0);
+        tile.ulByteSize = (uint64_t)pl_json_uint_member(obj, "byte_size", 0);
+
+        if(!pl_planet_add_tile(manifest, tile))
+        {
+            pl_planet_cleanup_manifest(manifest);
+            pl_unload_json(&root);
+            PL_FREE(jsonText);
+            return NULL;
+        }
+    }
+
+    pl_planet_finalize_manifest(manifest);
+
+    if(validatePayloads && manifest->bPayloads)
+    {
+        char resolvedPath[PL_PLANET_PATH_MAX];
+        for(uint32_t i = 0; i < manifest->uTileCount; i++)
+        {
+            const plPlanetTileRecord* tile = &manifest->atTiles[i];
+            if(tile->ulByteSize == 0)
+            {
+                pl_planet_cleanup_manifest(manifest);
+                pl_unload_json(&root);
+                PL_FREE(jsonText);
+                return NULL;
+            }
+
+            if(!pl_planet_resolve_tile_path(manifest, tile, resolvedPath, sizeof(resolvedPath)))
+            {
+                pl_planet_cleanup_manifest(manifest);
+                pl_unload_json(&root);
+                PL_FREE(jsonText);
+                return NULL;
+            }
+
+            plPlanetChunkHeader header = {0};
+            if(!pl_planet_read_chunk_header(resolvedPath, &header))
+            {
+                pl_planet_cleanup_manifest(manifest);
+                pl_unload_json(&root);
+                PL_FREE(jsonText);
+                return NULL;
+            }
+
+            if(header.iFace != tile->tAddress.tFace ||
+               header.uLod != tile->tAddress.uLod ||
+               header.uX != tile->tAddress.uX ||
+               header.uY != tile->tAddress.uY ||
+               header.uSourceIndex != tile->uSourceIndex ||
+               header.uTileSize != manifest->tInit.uTileSize)
+            {
+                pl_planet_cleanup_manifest(manifest);
+                pl_unload_json(&root);
+                PL_FREE(jsonText);
+                return NULL;
+            }
+        }
+    }
+
+    pl_unload_json(&root);
+    PL_FREE(jsonText);
+    return manifest;
+}
+
+static const plPlanetManifestInit*
+pl_planet_get_manifest_init(const plPlanetManifest* manifest)
+{
+    return manifest ? &manifest->tInit : NULL;
+}
+
+static uint32_t
+pl_planet_get_source_count(const plPlanetManifest* manifest)
+{
+    return manifest ? manifest->uSourceCount : 0u;
+}
+
+static const plPlanetSourceRecord*
+pl_planet_get_source(const plPlanetManifest* manifest, uint32_t sourceIndex)
+{
+    if(!manifest || sourceIndex >= manifest->uSourceCount)
+        return NULL;
+    return &manifest->atSources[sourceIndex];
+}
+
+static uint32_t
+pl_planet_get_tile_count(const plPlanetManifest* manifest)
+{
+    return manifest ? manifest->uTileCount : 0u;
+}
+
+static const plPlanetTileRecord*
+pl_planet_get_tile(const plPlanetManifest* manifest, uint32_t tileIndex)
+{
+    if(!manifest || tileIndex >= manifest->uTileCount)
+        return NULL;
+    return &manifest->atTiles[tileIndex];
+}
+
+static bool
+pl_planet_manifest_has_payloads(const plPlanetManifest* manifest)
+{
+    return manifest ? manifest->bPayloads : false;
+}
+
+static const char*
+pl_planet_get_manifest_path(const plPlanetManifest* manifest)
+{
+    return manifest ? manifest->acManifestPath : NULL;
+}
+
+static const char*
+pl_planet_get_manifest_base_path(const plPlanetManifest* manifest)
+{
+    return manifest ? manifest->acBasePath : NULL;
+}
+
+static plPlanetTileAddress
+pl_planet_make_address(plPlanetFace face, uint8_t lod, uint32_t x, uint32_t y)
+{
+    return (plPlanetTileAddress){
+        .tFace = face,
+        .uLod = lod,
+        .uX = x,
+        .uY = y
+    };
+}
+
+static plPlanetTileAddress
+pl_planet_parent_address(plPlanetTileAddress address)
+{
+    if(address.uLod == 0)
+        return address;
+
+    return (plPlanetTileAddress){
+        .tFace = address.tFace,
+        .uLod = (uint8_t)(address.uLod - 1u),
+        .uX = address.uX >> 1u,
+        .uY = address.uY >> 1u
+    };
+}
+
+static bool
+pl_planet_find_tile(const plPlanetManifest* manifest, plPlanetTileAddress address, const plPlanetTileRecord** outTile)
+{
+    if(outTile)
+        *outTile = NULL;
+    if(!manifest || !manifest->atTiles || manifest->uTileCount == 0 || !pl__planet_valid_address(address))
+        return false;
+
+    if(!manifest->bFinalized)
+    {
+        for(uint32_t i = 0; i < manifest->uTileCount; i++)
+        {
+            if(pl__planet_compare_address(manifest->atTiles[i].tAddress, address) == 0)
+            {
+                if(outTile)
+                    *outTile = &manifest->atTiles[i];
+                return true;
+            }
+        }
+        return false;
+    }
+
+    uint32_t lo = 0;
+    uint32_t hi = manifest->uTileCount;
+    while(lo < hi)
+    {
+        const uint32_t mid = lo + (hi - lo) / 2u;
+        const int cmp = pl__planet_compare_address(manifest->atTiles[mid].tAddress, address);
+        if(cmp == 0)
+        {
+            if(outTile)
+                *outTile = &manifest->atTiles[mid];
+            return true;
+        }
+        if(cmp < 0)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+
+    return false;
+}
+
+static bool
+pl_planet_select_tile(const plPlanetManifest* manifest, plPlanetTileAddress desired, plPlanetTileSelection* outSelection)
+{
+    if(outSelection)
+        memset(outSelection, 0, sizeof(*outSelection));
+    if(!manifest || !outSelection || !pl__planet_valid_address(desired))
+        return false;
+
+    plPlanetTileAddress current = desired;
+    uint8_t fallback = 0;
+    const plPlanetTileRecord* tile = NULL;
+
+    for(;;)
+    {
+        if(pl_planet_find_tile(manifest, current, &tile))
+        {
+            outSelection->ptTile = tile;
+            outSelection->tRequested = desired;
+            outSelection->tSelected = current;
+            outSelection->uFallbackLevels = fallback;
+            outSelection->bExact = fallback == 0;
+            return true;
+        }
+
+        if(current.uLod == 0)
+            return false;
+
+        current = pl_planet_parent_address(current);
+        fallback++;
+    }
+}
+
+static bool
+pl_planet_resolve_tile_path(const plPlanetManifest* manifest, const plPlanetTileRecord* tile, char* outPath, uint32_t outPathSize)
+{
+    if(!manifest || !tile || !outPath || outPathSize == 0 || tile->acChunkFile[0] == '\0')
+        return false;
+
+    if(pl__planet_is_absolute_path(tile->acChunkFile) || manifest->acBasePath[0] == '\0')
+    {
+        snprintf(outPath, outPathSize, "%s", tile->acChunkFile);
+        return outPath[0] != '\0';
+    }
+
+    const char sep =
+#ifdef _WIN32
+        '\\';
+#else
+        '/';
+#endif
+
+    const size_t baseLen = strlen(manifest->acBasePath);
+    if(baseLen > 0 && (manifest->acBasePath[baseLen - 1u] == '/' || manifest->acBasePath[baseLen - 1u] == '\\'))
+        snprintf(outPath, outPathSize, "%s%s", manifest->acBasePath, tile->acChunkFile);
+    else
+        snprintf(outPath, outPathSize, "%s%c%s", manifest->acBasePath, sep, tile->acChunkFile);
+    return outPath[0] != '\0';
+}
+
+static bool
+pl_planet_read_chunk_header(const char* path, plPlanetChunkHeader* outHeader)
+{
+    if(outHeader)
+        memset(outHeader, 0, sizeof(*outHeader));
+    if(!path || !outHeader)
+        return false;
+
+    FILE* file = fopen(path, "rb");
+    if(!file)
+        return false;
+
+    plPlanetChunkHeader header = {0};
+    const size_t readSize = fread(&header, 1, sizeof(header), file);
+    fclose(file);
+    if(readSize != sizeof(header))
+        return false;
+    if(!pl__planet_chunk_header_valid(&header))
+        return false;
+
+    *outHeader = header;
+    return true;
+}
+
+static bool
+pl_planet_read_chunk_payload(const char* path, const plPlanetChunkHeader* header, plPlanetVertex* outVertices, uint32_t* outIndices)
+{
+    if(!path || !outVertices || !outIndices)
+        return false;
+
+    plPlanetChunkHeader localHeader = {0};
+    const plPlanetChunkHeader* useHeader = header;
+    if(!useHeader)
+    {
+        if(!pl_planet_read_chunk_header(path, &localHeader))
+            return false;
+        useHeader = &localHeader;
+    }
+
+    if(!pl__planet_chunk_header_valid(useHeader))
+        return false;
+
+    FILE* file = fopen(path, "rb");
+    if(!file)
+        return false;
+
+    if(fseek(file, (long)useHeader->ulVertexDataOffset, SEEK_SET) != 0)
+    {
+        fclose(file);
+        return false;
+    }
+
+    const size_t vertexBytes = (size_t)useHeader->uVertexCount * sizeof(plPlanetVertex);
+    if(fread(outVertices, 1, vertexBytes, file) != vertexBytes)
+    {
+        fclose(file);
+        return false;
+    }
+
+    if(fseek(file, (long)useHeader->ulIndexDataOffset, SEEK_SET) != 0)
+    {
+        fclose(file);
+        return false;
+    }
+
+    const size_t indexBytes = (size_t)useHeader->uIndexCount * sizeof(uint32_t);
+    if(fread(outIndices, 1, indexBytes, file) != indexBytes)
+    {
+        fclose(file);
+        return false;
+    }
+
+    fclose(file);
+    return true;
+}
+
+static void
+pl__planet_split_double(double value, float* outHigh, float* outLow)
+{
+    *outHigh = (float)value;
+    *outLow = (float)(value - (double)*outHigh);
+}
+
+static int
+pl__planet_to_shader_flags(plPlanetRenderFlags flags)
+{
+    int shaderFlags = PL_TERRAIN_SHADER_FLAGS_NONE;
+    if(flags & PL_PLANET_RENDER_FLAGS_WIREFRAME)
+        shaderFlags |= PL_TERRAIN_SHADER_FLAGS_WIREFRAME;
+    if(flags & PL_PLANET_RENDER_FLAGS_SHOW_LEVELS)
+        shaderFlags |= PL_TERRAIN_SHADER_FLAGS_SHOW_LEVELS;
+    if(flags & PL_PLANET_RENDER_FLAGS_SHOW_TILES)
+        shaderFlags |= PL_TERRAIN_SHADER_FLAGS_SHOW_CHUNKS;
+    if(flags & PL_PLANET_RENDER_FLAGS_FLATTEN)
+        shaderFlags |= PL_TERRAIN_SHADER_FLAGS_FLATTEN;
+    return shaderFlags;
+}
+
+static plTextureHandle
+pl__planet_create_texture(plCommandBuffer* cmdBuffer, const plTextureDesc* desc, const char* name)
+{
+    (void)cmdBuffer;
+    (void)name;
+
+    if(!gptCtx || !gptGfx || !gptCtx->ptDevice || !desc)
+        return (plTextureHandle){0};
+
+    plTexture* texture = NULL;
+    const plTextureHandle handle = gptGfx->create_texture(gptCtx->ptDevice, desc, &texture);
+    if(!handle.uData || !texture)
+        return (plTextureHandle){0};
+
+    const plDeviceMemoryAllocation allocation = gptGfx->allocate_memory(
+        gptCtx->ptDevice,
+        texture->tMemoryRequirements.ulSize,
+        PL_MEMORY_FLAGS_DEVICE_LOCAL,
+        texture->tMemoryRequirements.uMemoryTypeBits,
+        name ? name : "planet texture memory");
+
+    gptGfx->bind_texture_to_memory(gptCtx->ptDevice, handle, &allocation);
+    return handle;
+}
+
+static bool
+pl__planet_address_matches_header(const plPlanetTileRecord* tile, const plPlanetChunkHeader* header)
+{
+    if(!tile || !header)
+        return false;
+
+    return header->iFace == tile->tAddress.tFace &&
+           header->uLod == tile->tAddress.uLod &&
+           header->uX == tile->tAddress.uX &&
+           header->uY == tile->tAddress.uY &&
+           header->uSourceIndex == tile->uSourceIndex;
+}
+
+static plPlanet*
+pl_planet_create_planet(plCommandBuffer* cmdBuffer, plPlanetInit init)
+{
+    (void)cmdBuffer;
+    if(!gptCtx || !gptGfx || !gptCtx->ptDevice || !cmdBuffer)
+        return NULL;
+
+    plPlanetManifest* manifest = init.ptManifest;
+    if(!manifest && init.pcManifestPath)
+        manifest = pl_planet_load_manifest_json(init.pcManifestPath, init.bValidatePayloads);
+    if(!manifest || !manifest->bPayloads || manifest->uTileCount == 0)
+    {
+        if(manifest && manifest != init.ptManifest)
+            pl_planet_cleanup_manifest(manifest);
+        return NULL;
+    }
+
+    plPlanet* planet = (plPlanet*)PL_ALLOC(sizeof(plPlanet));
+    if(!planet)
+    {
+        pl_planet_cleanup_manifest(manifest);
+        return NULL;
+    }
+    memset(planet, 0, sizeof(*planet));
+    planet->ptManifest = manifest;
+    planet->tRuntimeOptions.tLightDirection = (plVec3){-1.0f, -1.0f, -1.0f};
+
+    planet->atGpuTiles = (plPlanetGpuTile*)PL_ALLOC((size_t)manifest->uTileCount * sizeof(plPlanetGpuTile));
+    if(!planet->atGpuTiles)
+    {
+        pl_planet_cleanup_manifest(manifest);
+        PL_FREE(planet);
+        return NULL;
+    }
+    memset(planet->atGpuTiles, 0, (size_t)manifest->uTileCount * sizeof(plPlanetGpuTile));
+
+    uint64_t totalVertexBytes = 0;
+    uint64_t totalIndexBytes = 0;
+    size_t maxVertexBytes = 0;
+    size_t maxIndexBytes = 0;
+    char resolvedPath[PL_PLANET_PATH_MAX] = {0};
+
+    for(uint32_t i = 0; i < manifest->uTileCount; i++)
+    {
+        const plPlanetTileRecord* tile = &manifest->atTiles[i];
+        if(tile->ulByteOffset != 0)
+            goto fail;
+        if(!pl_planet_resolve_tile_path(manifest, tile, resolvedPath, sizeof(resolvedPath)))
+            goto fail;
+
+        plPlanetChunkHeader header = {0};
+        if(!pl_planet_read_chunk_header(resolvedPath, &header))
+            goto fail;
+        if(!pl__planet_address_matches_header(tile, &header))
+            goto fail;
+        if(header.uTileSize != manifest->tInit.uTileSize)
+            goto fail;
+
+        const uint64_t vertexBytes = (uint64_t)header.uVertexCount * sizeof(plPlanetVertex);
+        const uint64_t indexBytes = (uint64_t)header.uIndexCount * sizeof(uint32_t);
+        if(vertexBytes > (uint64_t)SIZE_MAX || indexBytes > (uint64_t)SIZE_MAX)
+            goto fail;
+
+        plPlanetGpuTile* gpuTile = &planet->atGpuTiles[planet->uGpuTileCount++];
+        gpuTile->tTile = *tile;
+        gpuTile->tHeader = header;
+        gpuTile->uIndexCount = header.uIndexCount;
+        gpuTile->uCacheSlot = UINT32_MAX;
+
+        if((size_t)vertexBytes > maxVertexBytes)
+            maxVertexBytes = (size_t)vertexBytes;
+        if((size_t)indexBytes > maxIndexBytes)
+            maxIndexBytes = (size_t)indexBytes;
+        totalVertexBytes += vertexBytes;
+        totalIndexBytes += indexBytes;
+    }
+
+    const uint64_t totalUploadBytes = totalVertexBytes + totalIndexBytes;
+
+    if(maxVertexBytes == 0 || maxIndexBytes == 0 || totalUploadBytes < totalVertexBytes)
+        goto fail;
+
+    const uint64_t maxTileBytes = (uint64_t)maxVertexBytes + (uint64_t)maxIndexBytes;
+    if(maxTileBytes == 0 || maxTileBytes > (uint64_t)SIZE_MAX)
+        goto fail;
+
+    const uint64_t cacheBudget = gptCtx->uGpuCacheSize ? gptCtx->uGpuCacheSize : 536870912ull;
+    uint32_t residentCapacity = planet->uGpuTileCount;
+    if(totalUploadBytes > cacheBudget)
+    {
+        residentCapacity = (uint32_t)(cacheBudget / maxTileBytes);
+        if(residentCapacity < 6u)
+            residentCapacity = planet->uGpuTileCount < 6u ? planet->uGpuTileCount : 6u;
+    }
+    if(residentCapacity == 0 || residentCapacity > planet->uGpuTileCount)
+        residentCapacity = planet->uGpuTileCount;
+
+    planet->uResidentCapacity = residentCapacity;
+    planet->szSlotVertexBytes = maxVertexBytes;
+    planet->szSlotIndexBytes = maxIndexBytes;
+    planet->aiTileIndexBySlot = (int32_t*)PL_ALLOC((size_t)residentCapacity * sizeof(int32_t));
+    if(!planet->aiTileIndexBySlot)
+        goto fail;
+    for(uint32_t i = 0; i < residentCapacity; i++)
+        planet->aiTileIndexBySlot[i] = -1;
+
+    const uint64_t cacheVertexBytes = (uint64_t)residentCapacity * (uint64_t)maxVertexBytes;
+    const uint64_t cacheIndexBytes = (uint64_t)residentCapacity * (uint64_t)maxIndexBytes;
+    if(cacheVertexBytes > (uint64_t)SIZE_MAX || cacheIndexBytes > (uint64_t)SIZE_MAX)
+        goto fail;
+
+    {
+        const plBufferDesc vertexBufferDesc = {
+            .tUsage = PL_BUFFER_USAGE_VERTEX | PL_BUFFER_USAGE_TRANSFER_DESTINATION,
+            .szByteSize = (size_t)cacheVertexBytes,
+            .pcDebugName = "planet resident vertex cache"
+        };
+        plBuffer* vertexBuffer = NULL;
+        planet->tVertexBuffer = gptGfx->create_buffer(gptCtx->ptDevice, &vertexBufferDesc, &vertexBuffer);
+        if(!planet->tVertexBuffer.uData || !vertexBuffer)
+            goto fail;
+
+        const plDeviceMemoryAllocation vertexAllocation = gptGfx->allocate_memory(
+            gptCtx->ptDevice,
+            vertexBuffer->tMemoryRequirements.ulSize,
+            PL_MEMORY_FLAGS_DEVICE_LOCAL,
+            vertexBuffer->tMemoryRequirements.uMemoryTypeBits,
+            "planet vertex buffer memory");
+        gptGfx->bind_buffer_to_memory(gptCtx->ptDevice, planet->tVertexBuffer, &vertexAllocation);
+
+        const plBufferDesc indexBufferDesc = {
+            .tUsage = PL_BUFFER_USAGE_INDEX | PL_BUFFER_USAGE_TRANSFER_DESTINATION,
+            .szByteSize = (size_t)cacheIndexBytes,
+            .pcDebugName = "planet resident index cache"
+        };
+        plBuffer* indexBuffer = NULL;
+        planet->tIndexBuffer = gptGfx->create_buffer(gptCtx->ptDevice, &indexBufferDesc, &indexBuffer);
+        if(!planet->tIndexBuffer.uData || !indexBuffer)
+            goto fail;
+
+        const plDeviceMemoryAllocation indexAllocation = gptGfx->allocate_memory(
+            gptCtx->ptDevice,
+            indexBuffer->tMemoryRequirements.ulSize,
+            PL_MEMORY_FLAGS_DEVICE_LOCAL,
+            indexBuffer->tMemoryRequirements.uMemoryTypeBits,
+            "planet index buffer memory");
+        gptGfx->bind_buffer_to_memory(gptCtx->ptDevice, planet->tIndexBuffer, &indexAllocation);
+    }
+
+    planet->tStats.uManifestTiles = planet->uGpuTileCount;
+    planet->tStats.uLoadedTiles = 0;
+    planet->tStats.ulVertexBytes = cacheVertexBytes;
+    planet->tStats.ulIndexBytes = cacheIndexBytes;
+    return planet;
+
+fail:
+    if(planet)
+    {
+        if(planet->tVertexBuffer.uData)
+            gptGfx->destroy_buffer(gptCtx->ptDevice, planet->tVertexBuffer);
+        if(planet->tIndexBuffer.uData)
+            gptGfx->destroy_buffer(gptCtx->ptDevice, planet->tIndexBuffer);
+        if(planet->aiTileIndexBySlot)
+            PL_FREE(planet->aiTileIndexBySlot);
+        if(planet->atGpuTiles)
+            PL_FREE(planet->atGpuTiles);
+        if(planet->ptManifest)
+            pl_planet_cleanup_manifest(planet->ptManifest);
+        PL_FREE(planet);
+    }
+    return NULL;
+}
+
+static void
+pl_planet_cleanup_planet(plPlanet* planet)
+{
+    if(!planet)
+        return;
+
+    if(gptCtx && gptGfx && gptCtx->ptDevice)
+    {
+        if(planet->tVertexBuffer.uData)
+            gptGfx->destroy_buffer(gptCtx->ptDevice, planet->tVertexBuffer);
+        if(planet->tIndexBuffer.uData)
+            gptGfx->destroy_buffer(gptCtx->ptDevice, planet->tIndexBuffer);
+    }
+
+    if(planet->ptManifest)
+        pl_planet_cleanup_manifest(planet->ptManifest);
+    if(planet->aiTileIndexBySlot)
+        PL_FREE(planet->aiTileIndexBySlot);
+    if(planet->atGpuTiles)
+        PL_FREE(planet->atGpuTiles);
+    PL_FREE(planet);
+}
+
+static void
+pl_planet_load_shaders(plPlanetView* view)
+{
+    if(!view || !gptCtx || !gptGfx || !gptShader || !gptCtx->ptDevice || !gptCtx->tRenderPassLayout.uData)
+        return;
+
+    if(gptGfx->is_shader_valid(gptCtx->ptDevice, view->tShader))
+        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, view->tShader);
+    if(gptGfx->is_shader_valid(gptCtx->ptDevice, view->tWireframeShader))
+        gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, view->tWireframeShader);
+
+    const plShaderDesc shaderDescBase = {
+        .tVertexShader = gptShader->load_glsl(view->pcVertexShader, "main", NULL, NULL),
+        .tFragmentShader = gptShader->load_glsl(view->pcFragmentShader, "main", NULL, NULL),
+        .tGraphicsState = {
+            .ulDepthWriteEnabled = 1,
+            .ulDepthMode = PL_COMPARE_MODE_GREATER_OR_EQUAL,
+            .ulCullMode = PL_CULL_MODE_CULL_BACK,
+            .ulWireframe = 0,
+            .ulStencilMode = PL_COMPARE_MODE_ALWAYS,
+            .ulStencilRef = 0xff,
+            .ulStencilMask = 0xff,
+            .ulStencilOpFail = PL_STENCIL_OP_KEEP,
+            .ulStencilOpDepthFail = PL_STENCIL_OP_KEEP,
+            .ulStencilOpPass = PL_STENCIL_OP_KEEP
         },
+        .atVertexBufferLayouts = {
+            {
+                .uByteStride = sizeof(plPlanetVertex),
+                .atAttributes = {
+                    {.uByteOffset = offsetof(plPlanetVertex, tPositionHigh), .tFormat = PL_VERTEX_FORMAT_FLOAT3},
+                    {.uByteOffset = offsetof(plPlanetVertex, tPositionLow),  .tFormat = PL_VERTEX_FORMAT_FLOAT3},
+                    {.uByteOffset = offsetof(plPlanetVertex, tNormal),       .tFormat = PL_VERTEX_FORMAT_FLOAT3},
+                    {.uByteOffset = offsetof(plPlanetVertex, tUV),           .tFormat = PL_VERTEX_FORMAT_FLOAT2},
+                    {.uByteOffset = offsetof(plPlanetVertex, fHeight),       .tFormat = PL_VERTEX_FORMAT_FLOAT}
+                }
+            }
+        },
+        .atBlendStates = {
+            {
+                .bBlendEnabled = false,
+                .uColorWriteMask = PL_COLOR_WRITE_MASK_ALL,
+                .tSrcColorFactor = PL_BLEND_FACTOR_SRC_ALPHA,
+                .tDstColorFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .tColorOp = PL_BLEND_OP_ADD,
+                .tSrcAlphaFactor = PL_BLEND_FACTOR_SRC_ALPHA,
+                .tDstAlphaFactor = PL_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .tAlphaOp = PL_BLEND_OP_ADD
+            }
+        },
+        .tRenderPassLayout = gptCtx->tRenderPassLayout,
+        .pcDebugName = "planet shader"
     };
 
-    plBindGroupUpdateData tGlobalBindGroupData = {
-        .uTextureCount = 1,
-        .atTextureBindings = tGlobalTextureData
-    };
+    plShaderDesc shaderDesc = shaderDescBase;
+    view->tShader = gptGfx->create_shader(gptCtx->ptDevice, &shaderDesc);
 
+    shaderDesc.tGraphicsState.ulWireframe = 1;
+    shaderDesc.tGraphicsState.ulDepthWriteEnabled = 0;
+    shaderDesc.tGraphicsState.ulDepthMode = PL_COMPARE_MODE_ALWAYS;
+    shaderDesc.pcDebugName = "planet wireframe shader";
+    view->tWireframeShader = gptGfx->create_shader(gptCtx->ptDevice, &shaderDesc);
+}
+
+static plPlanetView*
+pl_planet_create_view(plPlanet* planet, plCommandBuffer* cmdBuffer, plPlanetViewInit init)
+{
+    if(!planet || !gptCtx || !gptGfx || !gptCtx->ptDevice || !cmdBuffer || !gptCtx->tRenderPassLayout.uData)
+        return NULL;
+
+    plPlanetView* view = (plPlanetView*)PL_ALLOC(sizeof(plPlanetView));
+    if(!view)
+        return NULL;
+    memset(view, 0, sizeof(*view));
+
+    view->ptPlanet = planet;
+    view->uOutputWidth = init.uOutputWidth ? init.uOutputWidth : 1280u;
+    view->uOutputHeight = init.uOutputHeight ? init.uOutputHeight : 720u;
+    view->pcVertexShader = init.pcVertexShader ? init.pcVertexShader : "planet.vert";
+    view->pcFragmentShader = init.pcFragmentShader ? init.pcFragmentShader : "planet.frag";
+    view->tRuntimeOptions.fLodPixelThreshold = 2.0f;
+
+    const plTextureDesc outputTextureDesc = {
+        .tDimensions = {(float)view->uOutputWidth, (float)view->uOutputHeight, 1.0f},
+        .tFormat = PL_FORMAT_R8G8B8A8_UNORM,
+        .uLayers = 1,
+        .uMips = 1,
+        .tType = PL_TEXTURE_TYPE_2D,
+        .tUsage = PL_TEXTURE_USAGE_SAMPLED | PL_TEXTURE_USAGE_COLOR_ATTACHMENT,
+        .pcDebugName = "planet view output"
+    };
+    view->tOutputTexture = pl__planet_create_texture(cmdBuffer, &outputTextureDesc, "planet view output memory");
+    if(!view->tOutputTexture.uData)
+        goto fail;
+    if(gptDraw)
+        view->tOutputTextureHandle = gptDraw->create_bind_group_for_texture(view->tOutputTexture);
+
+    const plTextureDesc depthTextureDesc = {
+        .tDimensions = {(float)view->uOutputWidth, (float)view->uOutputHeight, 1.0f},
+        .tFormat = PL_FORMAT_D32_FLOAT_S8_UINT,
+        .uLayers = 1,
+        .uMips = 1,
+        .tType = PL_TEXTURE_TYPE_2D,
+        .tUsage = PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT,
+        .pcDebugName = "planet view depth"
+    };
+    view->tOutputTextureDepth = pl__planet_create_texture(cmdBuffer, &depthTextureDesc, "planet view depth memory");
+    if(!view->tOutputTextureDepth.uData)
+        goto fail;
+
+    plBlitEncoder* initEncoder = gptGfx->begin_blit_pass(cmdBuffer);
+    gptGfx->set_texture_usage(initEncoder, view->tOutputTexture, PL_TEXTURE_USAGE_SAMPLED, 0);
+    gptGfx->set_texture_usage(initEncoder, view->tOutputTextureDepth, PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT, 0);
+    gptGfx->end_blit_pass(initEncoder);
+
+    plRenderPassAttachments attachmentSets[PL_MAX_FRAMES_IN_FLIGHT] = {0};
     for(uint32_t i = 0; i < gptGfx->get_frames_in_flight(); i++)
-        gptGfx->update_bind_group(gptCtx->ptDevice, gptCtx->atBindGroups[i], &tGlobalBindGroupData);
+    {
+        attachmentSets[i].atViewAttachments[0] = view->tOutputTextureDepth;
+        attachmentSets[i].atViewAttachments[1] = view->tOutputTexture;
+    }
 
-    return (uint32_t)ulValue;
+    const plRenderPassDesc renderPassDesc = {
+        .tLayout = gptCtx->tRenderPassLayout,
+        .tDepthTarget = {
+            .tLoadOp = PL_LOAD_OP_CLEAR,
+            .tStoreOp = PL_STORE_OP_STORE,
+            .tStencilLoadOp = PL_LOAD_OP_CLEAR,
+            .tStencilStoreOp = PL_STORE_OP_STORE,
+            .tCurrentUsage = PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT,
+            .tNextUsage = PL_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT,
+            .fClearZ = 0.0f
+        },
+        .atColorTargets = {
+            {
+                .tLoadOp = PL_LOAD_OP_CLEAR,
+                .tStoreOp = PL_STORE_OP_STORE,
+                .tCurrentUsage = PL_TEXTURE_USAGE_SAMPLED,
+                .tNextUsage = PL_TEXTURE_USAGE_SAMPLED,
+                .tClearColor = {0.0f, 0.0f, 0.0f, 1.0f}
+            }
+        },
+        .tDimensions = {.x = (float)view->uOutputWidth, .y = (float)view->uOutputHeight},
+        .pcDebugName = "planet view"
+    };
+    view->tRenderPass = gptGfx->create_render_pass(gptCtx->ptDevice, &renderPassDesc, attachmentSets);
+    if(!view->tRenderPass.uData)
+        goto fail;
+
+    pl_planet_load_shaders(view);
+    return view;
+
+fail:
+    if(view->tRenderPass.uData)
+        gptGfx->destroy_render_pass(gptCtx->ptDevice, view->tRenderPass);
+    if(view->tOutputTexture.uData)
+        gptGfx->destroy_texture(gptCtx->ptDevice, view->tOutputTexture);
+    if(view->tOutputTextureDepth.uData)
+        gptGfx->destroy_texture(gptCtx->ptDevice, view->tOutputTextureDepth);
+    PL_FREE(view);
+    return NULL;
+}
+
+static void
+pl_planet_cleanup_view(plPlanetView* view)
+{
+    if(!view)
+        return;
+
+    if(gptCtx && gptGfx && gptCtx->ptDevice)
+    {
+        if(gptGfx->is_shader_valid(gptCtx->ptDevice, view->tShader))
+            gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, view->tShader);
+        if(gptGfx->is_shader_valid(gptCtx->ptDevice, view->tWireframeShader))
+            gptGfx->queue_shader_for_deletion(gptCtx->ptDevice, view->tWireframeShader);
+        if(view->tRenderPass.uData)
+            gptGfx->destroy_render_pass(gptCtx->ptDevice, view->tRenderPass);
+        if(view->tOutputTexture.uData)
+            gptGfx->destroy_texture(gptCtx->ptDevice, view->tOutputTexture);
+        if(view->tOutputTextureDepth.uData)
+            gptGfx->destroy_texture(gptCtx->ptDevice, view->tOutputTextureDepth);
+    }
+
+    PL_FREE(view);
+}
+
+typedef struct _plPlanetSelectionContext
+{
+    plPlanet*  ptPlanet;
+    plPlanetView* ptView;
+    plCamera*  ptCamera;
+    uint8_t*   auVisible;
+    uint8_t*   auSelected;
+    float      fLodPixelThreshold;
+    float      fScreenScale;
+    bool       bForceMaxLod;
+} plPlanetSelectionContext;
+
+static plVec3d
+pl__planet_chunk_center(const plPlanetChunkHeader* header)
+{
+    return (plVec3d){
+        0.5 * (header->tMinBound.x + header->tMaxBound.x),
+        0.5 * (header->tMinBound.y + header->tMaxBound.y),
+        0.5 * (header->tMinBound.z + header->tMaxBound.z)
+    };
+}
+
+static double
+pl__planet_chunk_radius(const plPlanetChunkHeader* header)
+{
+    const double dx = header->tMaxBound.x - header->tMinBound.x;
+    const double dy = header->tMaxBound.y - header->tMinBound.y;
+    const double dz = header->tMaxBound.z - header->tMinBound.z;
+    return 0.5 * sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+static int32_t
+pl__planet_find_gpu_tile_index(const plPlanet* planet, plPlanetTileAddress address)
+{
+    if(!planet || !planet->atGpuTiles)
+        return -1;
+
+    uint32_t lo = 0;
+    uint32_t hi = planet->uGpuTileCount;
+    while(lo < hi)
+    {
+        const uint32_t mid = lo + (hi - lo) / 2u;
+        const int cmp = pl__planet_compare_address(planet->atGpuTiles[mid].tTile.tAddress, address);
+        if(cmp == 0)
+            return (int32_t)mid;
+        if(cmp < 0)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    return -1;
+}
+
+static bool
+pl__planet_gpu_tile_visible(const plPlanet* planet, const plPlanetGpuTile* gpuTile, const plCamera* camera)
+{
+    if(!planet || !gpuTile || !camera)
+        return false;
+
+    const plPlanetChunkHeader* header = &gpuTile->tHeader;
+    const plVec3d center = pl__planet_chunk_center(header);
+    const double tileRadius = pl__planet_chunk_radius(header);
+    const double planetRadius = planet->ptManifest ? planet->ptManifest->tInit.dRadius : header->dRadius;
+
+    const plVec3d cameraPos = camera->tPosDouble;
+    const double cameraLen = sqrt(cameraPos.x * cameraPos.x + cameraPos.y * cameraPos.y + cameraPos.z * cameraPos.z);
+    const double centerLen = sqrt(center.x * center.x + center.y * center.y + center.z * center.z);
+
+    if(planetRadius > 0.0 && cameraLen > planetRadius * 1.001 && centerLen > 0.0)
+    {
+        const double dot = (center.x * cameraPos.x + center.y * cameraPos.y + center.z * cameraPos.z) / (centerLen * cameraLen);
+        const double angularPad = tileRadius / planetRadius;
+        const double horizon = planetRadius / cameraLen;
+        if(dot < horizon - angularPad)
+            return false;
+    }
+
+    // Tile visibility feeds LOD coverage, not just draw submission. Keep it in
+    // planet space so chunks that are only partially inside a render view still
+    // refine normally; the viewport/scissor clips the final pixels.
+    return true;
+}
+
+static float
+pl__planet_gpu_tile_screen_error(const plPlanetSelectionContext* ctx, const plPlanetGpuTile* gpuTile)
+{
+    const plVec3d center = pl__planet_chunk_center(&gpuTile->tHeader);
+    const double tileRadius = pl__planet_chunk_radius(&gpuTile->tHeader);
+    const plVec3d cameraPos = ctx->ptCamera->tPosDouble;
+    const double dx = center.x - cameraPos.x;
+    const double dy = center.y - cameraPos.y;
+    const double dz = center.z - cameraPos.z;
+    double distance = sqrt(dx * dx + dy * dy + dz * dz) - tileRadius;
+    if(distance < 1.0)
+        distance = 1.0;
+    return (float)(gpuTile->tTile.dGeometricError * (double)ctx->fScreenScale / distance);
+}
+
+static bool
+pl__planet_select_tile_recursive(plPlanetSelectionContext* ctx, plPlanetTileAddress address)
+{
+    const int32_t tileIndex = pl__planet_find_gpu_tile_index(ctx->ptPlanet, address);
+    if(tileIndex < 0)
+        return false;
+    if(!ctx->auVisible[tileIndex])
+        return false;
+
+    plPlanetGpuTile* gpuTile = &ctx->ptPlanet->atGpuTiles[tileIndex];
+    const float screenError = pl__planet_gpu_tile_screen_error(ctx, gpuTile);
+    bool refined = false;
+
+    if(address.uLod < ctx->ptPlanet->ptManifest->tInit.uMaxLod && (ctx->bForceMaxLod || screenError > ctx->fLodPixelThreshold))
+    {
+        uint32_t visibleChildCount = 0;
+        uint32_t selectedChildCount = 0;
+        for(uint32_t childY = 0; childY < 2u; childY++)
+        {
+            for(uint32_t childX = 0; childX < 2u; childX++)
+            {
+                const plPlanetTileAddress childAddress = {
+                    .tFace = address.tFace,
+                    .uLod = (uint8_t)(address.uLod + 1u),
+                    .uX = address.uX * 2u + childX,
+                    .uY = address.uY * 2u + childY
+                };
+                const int32_t childIndex = pl__planet_find_gpu_tile_index(ctx->ptPlanet, childAddress);
+                if(childIndex < 0 || !ctx->auVisible[childIndex])
+                    continue;
+                visibleChildCount++;
+                if(pl__planet_select_tile_recursive(ctx, childAddress))
+                    selectedChildCount++;
+            }
+        }
+        refined = visibleChildCount > 0 && selectedChildCount == visibleChildCount;
+    }
+
+    if(!refined)
+        ctx->auSelected[tileIndex] = 1u;
+    return true;
+}
+
+static void
+pl__planet_select_visible_tiles(plPlanetView* view, plCamera* camera, uint8_t* selected, uint8_t* visible)
+{
+    plPlanet* planet = view->ptPlanet;
+    for(uint32_t i = 0; i < planet->uGpuTileCount; i++)
+        visible[i] = pl__planet_gpu_tile_visible(planet, &planet->atGpuTiles[i], camera) ? 1u : 0u;
+
+    float lodThreshold = view->tRuntimeOptions.fLodPixelThreshold;
+    if(lodThreshold <= 0.0f)
+        lodThreshold = 2.0f;
+
+    const float tanHalfFov = camera->fFieldOfView > 0.0f ? tanf(0.5f * camera->fFieldOfView) : 1.0f;
+    const plVec3d cameraPos = camera->tPosDouble;
+    const double cameraLen = sqrt(cameraPos.x * cameraPos.x + cameraPos.y * cameraPos.y + cameraPos.z * cameraPos.z);
+    const double planetRadius = planet->ptManifest ? planet->ptManifest->tInit.dRadius : 0.0;
+    const double altitude = planetRadius > 0.0 ? cameraLen - planetRadius : DBL_MAX;
+    const bool forceMaxLod = planetRadius > 0.0 && altitude >= 0.0 && altitude < planetRadius * 0.1;
+
+    plPlanetSelectionContext ctx = {
+        .ptPlanet = planet,
+        .ptView = view,
+        .ptCamera = camera,
+        .auVisible = visible,
+        .auSelected = selected,
+        .fLodPixelThreshold = lodThreshold,
+        .fScreenScale = tanHalfFov > 0.0f ? (float)view->uOutputHeight / (2.0f * tanHalfFov) : (float)view->uOutputHeight,
+        .bForceMaxLod = forceMaxLod
+    };
+
+    for(int face = 0; face < PL_PLANET_FACE_COUNT; face++)
+    {
+        const plPlanetTileAddress root = {
+            .tFace = face,
+            .uLod = 0,
+            .uX = 0,
+            .uY = 0
+        };
+        pl__planet_select_tile_recursive(&ctx, root);
+    }
+
+    bool anySelected = false;
+    for(uint32_t i = 0; i < planet->uGpuTileCount; i++)
+    {
+        if(selected[i])
+        {
+            anySelected = true;
+            break;
+        }
+    }
+
+    if(!anySelected)
+    {
+        for(uint32_t i = 0; i < planet->uGpuTileCount; i++)
+            selected[i] = visible[i];
+    }
+}
+
+static bool
+pl__planet_acquire_cache_slot(plPlanet* planet, const uint8_t* selected, uint32_t* outSlot)
+{
+    if(outSlot)
+        *outSlot = UINT32_MAX;
+    if(!planet || !outSlot || !planet->aiTileIndexBySlot || planet->uResidentCapacity == 0)
+        return false;
+
+    for(uint32_t slot = 0; slot < planet->uResidentCapacity; slot++)
+    {
+        if(planet->aiTileIndexBySlot[slot] < 0)
+        {
+            *outSlot = slot;
+            return true;
+        }
+    }
+
+    uint32_t bestSlot = UINT32_MAX;
+    uint64_t bestFrame = UINT64_MAX;
+    for(uint32_t slot = 0; slot < planet->uResidentCapacity; slot++)
+    {
+        const int32_t tileIndex = planet->aiTileIndexBySlot[slot];
+        if(tileIndex < 0)
+            continue;
+        if(selected && selected[tileIndex])
+            continue;
+
+        const uint64_t lastUsed = planet->atGpuTiles[tileIndex].ulLastUsedFrame;
+        if(lastUsed < bestFrame)
+        {
+            bestFrame = lastUsed;
+            bestSlot = slot;
+        }
+    }
+
+    if(bestSlot == UINT32_MAX)
+        return false;
+
+    const int32_t evictedIndex = planet->aiTileIndexBySlot[bestSlot];
+    if(evictedIndex >= 0)
+    {
+        plPlanetGpuTile* evictedTile = &planet->atGpuTiles[evictedIndex];
+        evictedTile->bResident = false;
+        evictedTile->uCacheSlot = UINT32_MAX;
+        evictedTile->uVertexStart = 0;
+        evictedTile->uIndexStart = 0;
+        planet->aiTileIndexBySlot[bestSlot] = -1;
+        if(planet->uResidentCount > 0)
+            planet->uResidentCount--;
+        planet->tStats.uEvictedTilesLastFrame++;
+    }
+
+    *outSlot = bestSlot;
+    return true;
+}
+
+static bool
+pl__planet_upload_tile_to_slot(plPlanet* planet, uint32_t tileIndex, uint32_t slot, plBlitEncoder* encoder, plBufferHandle* outStagingHandle)
+{
+    if(outStagingHandle)
+        *outStagingHandle = (plBufferHandle){0};
+    if(!planet || tileIndex >= planet->uGpuTileCount || slot >= planet->uResidentCapacity || !encoder || !outStagingHandle)
+        return false;
+
+    plPlanetGpuTile* gpuTile = &planet->atGpuTiles[tileIndex];
+    const size_t vertexBytes = (size_t)gpuTile->tHeader.uVertexCount * sizeof(plPlanetVertex);
+    const size_t indexBytes = (size_t)gpuTile->tHeader.uIndexCount * sizeof(uint32_t);
+    const size_t uploadBytes = vertexBytes + indexBytes;
+    if(vertexBytes == 0 || indexBytes == 0 || uploadBytes < vertexBytes)
+        return false;
+    if(vertexBytes > planet->szSlotVertexBytes || indexBytes > planet->szSlotIndexBytes)
+        return false;
+
+    char resolvedPath[PL_PLANET_PATH_MAX] = {0};
+    if(!pl_planet_resolve_tile_path(planet->ptManifest, &gpuTile->tTile, resolvedPath, sizeof(resolvedPath)))
+        return false;
+
+    const plBufferDesc stagingBufferDesc = {
+        .tUsage = PL_BUFFER_USAGE_TRANSFER_SOURCE,
+        .szByteSize = uploadBytes,
+        .pcDebugName = "planet stream staging buffer"
+    };
+    plBuffer* stagingBuffer = NULL;
+    const plBufferHandle stagingHandle = gptGfx->create_buffer(gptCtx->ptDevice, &stagingBufferDesc, &stagingBuffer);
+    if(!stagingHandle.uData || !stagingBuffer)
+        return false;
+
+    const plDeviceMemoryAllocation stagingAllocation = gptGfx->allocate_memory(
+        gptCtx->ptDevice,
+        stagingBuffer->tMemoryRequirements.ulSize,
+        PL_MEMORY_FLAGS_HOST_VISIBLE | PL_MEMORY_FLAGS_HOST_COHERENT,
+        stagingBuffer->tMemoryRequirements.uMemoryTypeBits,
+        "planet stream staging memory");
+    gptGfx->bind_buffer_to_memory(gptCtx->ptDevice, stagingHandle, &stagingAllocation);
+
+    char* stagingBytes = stagingBuffer->tMemoryAllocation.pHostMapped;
+    if(!stagingBytes)
+    {
+        gptGfx->queue_buffer_for_deletion(gptCtx->ptDevice, stagingHandle);
+        return false;
+    }
+
+    plPlanetVertex* vertices = (plPlanetVertex*)stagingBytes;
+    uint32_t* indices = (uint32_t*)(stagingBytes + vertexBytes);
+    if(!pl_planet_read_chunk_payload(resolvedPath, &gpuTile->tHeader, vertices, indices))
+    {
+        gptGfx->queue_buffer_for_deletion(gptCtx->ptDevice, stagingHandle);
+        return false;
+    }
+
+    const uint64_t vertexDestinationOffset = (uint64_t)slot * (uint64_t)planet->szSlotVertexBytes;
+    const uint64_t indexDestinationOffset = (uint64_t)slot * (uint64_t)planet->szSlotIndexBytes;
+    gptGfx->copy_buffer(encoder, stagingHandle, planet->tVertexBuffer, 0, vertexDestinationOffset, vertexBytes);
+    gptGfx->copy_buffer(encoder, stagingHandle, planet->tIndexBuffer, vertexBytes, indexDestinationOffset, indexBytes);
+
+    gpuTile->uCacheSlot = slot;
+    gpuTile->uVertexStart = (uint32_t)(vertexDestinationOffset / sizeof(plPlanetVertex));
+    gpuTile->uIndexStart = (uint32_t)(indexDestinationOffset / sizeof(uint32_t));
+    gpuTile->uIndexCount = gpuTile->tHeader.uIndexCount;
+    gpuTile->ulLastUsedFrame = planet->ulFrameCounter;
+    gpuTile->bResident = true;
+    planet->aiTileIndexBySlot[slot] = (int32_t)tileIndex;
+    planet->uResidentCount++;
+    planet->tStats.uStreamedTilesLastFrame++;
+    *outStagingHandle = stagingHandle;
+    return true;
+}
+
+static bool
+pl__planet_prepare_selected_tiles(plPlanet* planet, uint8_t* selected, plCommandBuffer* cmdBuffer)
+{
+    if(!planet || !selected || !cmdBuffer || !gptGfx || !gptCtx || !gptCtx->ptDevice)
+        return false;
+
+    uint32_t selectedCount = 0;
+    uint32_t missingCount = 0;
+    for(uint32_t i = 0; i < planet->uGpuTileCount; i++)
+    {
+        if(!selected[i])
+            continue;
+        selectedCount++;
+        if(!planet->atGpuTiles[i].bResident)
+            missingCount++;
+        else
+            planet->atGpuTiles[i].ulLastUsedFrame = planet->ulFrameCounter;
+    }
+
+    if(selectedCount == 0)
+    {
+        planet->tStats.uLoadedTiles = planet->uResidentCount;
+        return true;
+    }
+    if(missingCount == 0)
+    {
+        planet->tStats.uLoadedTiles = planet->uResidentCount;
+        return true;
+    }
+
+    plBufferHandle* stagingHandles = (plBufferHandle*)PL_ALLOC((size_t)missingCount * sizeof(plBufferHandle));
+    if(!stagingHandles)
+        return false;
+    uint32_t stagingCount = 0;
+
+    plBlitEncoder* encoder = gptGfx->begin_blit_pass(cmdBuffer);
+    gptGfx->pipeline_barrier_blit(
+        encoder,
+        PL_PIPELINE_STAGE_VERTEX_SHADER | PL_PIPELINE_STAGE_TRANSFER,
+        PL_ACCESS_SHADER_READ | PL_ACCESS_TRANSFER_READ,
+        PL_PIPELINE_STAGE_TRANSFER,
+        PL_ACCESS_TRANSFER_WRITE);
+
+    bool ok = true;
+    for(uint32_t i = 0; i < planet->uGpuTileCount; i++)
+    {
+        if(!selected[i] || planet->atGpuTiles[i].bResident)
+            continue;
+
+        uint32_t slot = UINT32_MAX;
+        if(!pl__planet_acquire_cache_slot(planet, selected, &slot))
+        {
+            selected[i] = 0u;
+            ok = false;
+            continue;
+        }
+
+        plBufferHandle stagingHandle = {0};
+        if(!pl__planet_upload_tile_to_slot(planet, i, slot, encoder, &stagingHandle))
+        {
+            selected[i] = 0u;
+            ok = false;
+            continue;
+        }
+        stagingHandles[stagingCount++] = stagingHandle;
+    }
+
+    gptGfx->pipeline_barrier_blit(
+        encoder,
+        PL_PIPELINE_STAGE_TRANSFER,
+        PL_ACCESS_TRANSFER_WRITE,
+        PL_PIPELINE_STAGE_VERTEX_SHADER | PL_PIPELINE_STAGE_TRANSFER,
+        PL_ACCESS_SHADER_READ | PL_ACCESS_TRANSFER_READ);
+    gptGfx->end_blit_pass(encoder);
+
+    for(uint32_t i = 0; i < stagingCount; i++)
+        gptGfx->queue_buffer_for_deletion(gptCtx->ptDevice, stagingHandles[i]);
+    PL_FREE(stagingHandles);
+
+    planet->tStats.uLoadedTiles = planet->uResidentCount;
+    return ok;
+}
+
+static void
+pl_planet_render_view(plPlanetView* view, plCamera* camera, plCommandBuffer* cmdBuffer)
+{
+    if(!view || !view->ptPlanet || !camera || !cmdBuffer || !gptCtx || !gptGfx || !gptCtx->ptDevice)
+        return;
+
+    plPlanet* planet = view->ptPlanet;
+    planet->ulFrameCounter++;
+    planet->tStats.uDrawnTilesLastFrame = 0;
+    planet->tStats.uStreamedTilesLastFrame = 0;
+    planet->tStats.uEvictedTilesLastFrame = 0;
+    memset(planet->tStats.auDrawnTilesByLod, 0, sizeof(planet->tStats.auDrawnTilesByLod));
+    planet->tStats.uManifestTiles = planet->uGpuTileCount;
+    planet->tStats.uLoadedTiles = planet->uResidentCount;
+
+    const bool wireframe = (view->tRuntimeOptions.tFlags & PL_PLANET_RENDER_FLAGS_WIREFRAME) != 0;
+    const plShaderHandle shader = wireframe ? view->tWireframeShader : view->tShader;
+    if(!gptGfx->is_shader_valid(gptCtx->ptDevice, shader))
+        return;
+
+    uint8_t* selectedTiles = (uint8_t*)PL_ALLOC((size_t)planet->uGpuTileCount);
+    uint8_t* visibleTiles = (uint8_t*)PL_ALLOC((size_t)planet->uGpuTileCount);
+    if(!selectedTiles || !visibleTiles)
+    {
+        if(selectedTiles) PL_FREE(selectedTiles);
+        if(visibleTiles) PL_FREE(visibleTiles);
+        return;
+    }
+    memset(selectedTiles, 0, (size_t)planet->uGpuTileCount);
+    memset(visibleTiles, 0, (size_t)planet->uGpuTileCount);
+    pl__planet_select_visible_tiles(view, camera, selectedTiles, visibleTiles);
+    pl__planet_prepare_selected_tiles(planet, selectedTiles, cmdBuffer);
+
+    gptCtx->tCurrentDynamicBufferBlock = gptGfx->allocate_dynamic_data_block(gptCtx->ptDevice);
+
+    plRenderEncoder* encoder = gptGfx->begin_render_pass(cmdBuffer, view->tRenderPass, NULL);
+
+    const plRenderViewport viewport = {
+        .fWidth = (float)view->uOutputWidth,
+        .fHeight = (float)view->uOutputHeight,
+        .fMinDepth = 0.0f,
+        .fMaxDepth = 1.0f
+    };
+    gptGfx->set_viewport(encoder, &viewport);
+
+    const plScissor scissor = {
+        .uWidth = view->uOutputWidth,
+        .uHeight = view->uOutputHeight
+    };
+    gptGfx->set_scissor_region(encoder, &scissor);
+    gptGfx->set_depth_bias(encoder, 0.0f, 0.0f, 0.0f);
+    gptGfx->bind_shader(encoder, shader);
+    gptGfx->bind_vertex_buffer(encoder, planet->tVertexBuffer);
+
+    const plMat4 viewProjection = pl_mul_mat4(&camera->tProjMat, &camera->tViewMatDouble);
+    const int shaderFlags = pl__planet_to_shader_flags(view->tRuntimeOptions.tFlags);
+
+    for(uint32_t i = 0; i < planet->uGpuTileCount; i++)
+    {
+        if(!selectedTiles[i])
+            continue;
+
+        const plPlanetGpuTile* gpuTile = &planet->atGpuTiles[i];
+        if(!gpuTile->bResident)
+            continue;
+
+        plDynamicBinding dynamicBinding = pl_allocate_dynamic_data(gptGfx, gptCtx->ptDevice, &gptCtx->tCurrentDynamicBufferBlock);
+        plGpuDynPlanetData* dynamic = (plGpuDynPlanetData*)dynamicBinding.pcData;
+        memset(dynamic, 0, sizeof(*dynamic));
+
+        dynamic->iLevel = (int)gpuTile->tTile.tAddress.uLod;
+        dynamic->tFlags = shaderFlags;
+        dynamic->uTextureIndex = 0;
+        dynamic->iChunkID = (int)i;
+        dynamic->tUVInfo = (plVec4){1.0f, 1.0f, 0.0f, 0.0f};
+        dynamic->tLightDirection = planet->tRuntimeOptions.tLightDirection;
+        dynamic->fRadius = (float)planet->ptManifest->tInit.dRadius;
+        dynamic->fHazardMapStrength = 0.0f;
+        pl__planet_split_double(camera->tPosDouble.x, &dynamic->tCameraPosHigh.x, &dynamic->tCameraPosLow.x);
+        pl__planet_split_double(camera->tPosDouble.y, &dynamic->tCameraPosHigh.y, &dynamic->tCameraPosLow.y);
+        pl__planet_split_double(camera->tPosDouble.z, &dynamic->tCameraPosHigh.z, &dynamic->tCameraPosLow.z);
+        dynamic->tCameraViewProjection = viewProjection;
+
+        gptGfx->bind_graphics_bind_groups(encoder, shader, 0, 0, NULL, 1, &dynamicBinding);
+
+        const plDrawIndex draw = {
+            .uInstanceCount = 1,
+            .uIndexCount = gpuTile->uIndexCount,
+            .uVertexStart = gpuTile->uVertexStart,
+            .uIndexStart = gpuTile->uIndexStart,
+            .tIndexBuffer = planet->tIndexBuffer
+        };
+        gptGfx->draw_indexed(encoder, 1, &draw);
+        planet->tStats.uDrawnTilesLastFrame++;
+        if(gpuTile->tTile.tAddress.uLod < 16u)
+            planet->tStats.auDrawnTilesByLod[gpuTile->tTile.tAddress.uLod]++;
+    }
+
+    gptGfx->end_render_pass(encoder);
+    PL_FREE(visibleTiles);
+    PL_FREE(selectedTiles);
+}
+
+static plBindGroupHandle
+pl_planet_get_view_texture(plPlanetView* view)
+{
+    return view ? view->tOutputTextureHandle : (plBindGroupHandle){0};
+}
+
+static plTextureHandle
+pl_planet_get_view_output_texture(plPlanetView* view)
+{
+    return view ? view->tOutputTexture : (plTextureHandle){0};
+}
+
+static void
+pl_planet_set_runtime_options(plPlanet* planet, plPlanetRuntimeOptions options)
+{
+    if(planet)
+        planet->tRuntimeOptions = options;
+}
+
+static plPlanetRuntimeOptions
+pl_planet_get_runtime_options(plPlanet* planet)
+{
+    return planet ? planet->tRuntimeOptions : (plPlanetRuntimeOptions){0};
+}
+
+static void
+pl_planet_set_view_runtime_options(plPlanetView* view, plPlanetViewRuntimeOptions options)
+{
+    if(view)
+        view->tRuntimeOptions = options;
+}
+
+static plPlanetViewRuntimeOptions
+pl_planet_get_view_runtime_options(plPlanetView* view)
+{
+    return view ? view->tRuntimeOptions : (plPlanetViewRuntimeOptions){0};
+}
+
+static void
+pl_planet_set_shaders(plPlanetView* view, const char* vertexShader, const char* fragmentShader)
+{
+    if(!view)
+        return;
+    if(vertexShader)
+        view->pcVertexShader = vertexShader;
+    if(fragmentShader)
+        view->pcFragmentShader = fragmentShader;
+    pl_planet_load_shaders(view);
+}
+
+static plPlanetRenderStats
+pl_planet_get_render_stats(plPlanet* planet)
+{
+    return planet ? planet->tStats : (plPlanetRenderStats){0};
+}
+
+static bool
+pl_planet_choose_source(const plPlanetManifest* manifest, double latitude, double longitude, double desiredMetersPerPixel, uint32_t* outSourceIndex)
+{
+    if(outSourceIndex)
+        *outSourceIndex = UINT32_MAX;
+    if(!manifest || !outSourceIndex)
+        return false;
+
+    bool found = false;
+    uint32_t bestIndex = UINT32_MAX;
+    int32_t bestPriority = INT32_MIN;
+    double bestMetersPerPixel = DBL_MAX;
+    double bestResolutionDelta = DBL_MAX;
+
+    for(uint32_t i = 0; i < manifest->uSourceCount; i++)
+    {
+        const plPlanetSourceRecord* source = &manifest->atSources[i];
+        if(!pl__planet_source_contains(source, latitude, longitude))
+            continue;
+
+        const double sourceMpp = source->dNativeMetersPerPixel > 0.0 ? source->dNativeMetersPerPixel : DBL_MAX;
+        const double resolutionDelta = desiredMetersPerPixel > 0.0 ? pl__planet_absd(sourceMpp - desiredMetersPerPixel) : 0.0;
+
+        bool better = !found;
+        if(found && source->uPriority > bestPriority)
+            better = true;
+        else if(found && source->uPriority == bestPriority && sourceMpp < bestMetersPerPixel)
+            better = true;
+        else if(found && source->uPriority == bestPriority && sourceMpp == bestMetersPerPixel && resolutionDelta < bestResolutionDelta)
+            better = true;
+
+        if(better)
+        {
+            found = true;
+            bestIndex = i;
+            bestPriority = source->uPriority;
+            bestMetersPerPixel = sourceMpp;
+            bestResolutionDelta = resolutionDelta;
+        }
+    }
+
+    if(!found)
+        return false;
+
+    *outSourceIndex = bestIndex;
+    return true;
+}
+
+static plVec3d
+pl_planet_face_uv_to_direction(plPlanetFace face, double u, double v)
+{
+    const double s = pl__planet_clamp(u, 0.0, 1.0) * 2.0 - 1.0;
+    const double t = pl__planet_clamp(v, 0.0, 1.0) * 2.0 - 1.0;
+
+    switch(face)
+    {
+        case PL_PLANET_FACE_POS_X: return pl__planet_norm_vec3d((plVec3d){ 1.0, t, -s});
+        case PL_PLANET_FACE_NEG_X: return pl__planet_norm_vec3d((plVec3d){-1.0, t,  s});
+        case PL_PLANET_FACE_POS_Y: return pl__planet_norm_vec3d((plVec3d){ s,   1.0, -t});
+        case PL_PLANET_FACE_NEG_Y: return pl__planet_norm_vec3d((plVec3d){ s,  -1.0,  t});
+        case PL_PLANET_FACE_POS_Z: return pl__planet_norm_vec3d((plVec3d){ s,   t,   1.0});
+        case PL_PLANET_FACE_NEG_Z: return pl__planet_norm_vec3d((plVec3d){-s,   t,  -1.0});
+        default:                    return (plVec3d){0.0, 0.0, 1.0};
+    }
+}
+
+static bool
+pl_planet_direction_to_face_uv(plVec3d direction, plPlanetFace* outFace, double* outU, double* outV)
+{
+    const plVec3d d = pl__planet_norm_vec3d(direction);
+    const double ax = pl__planet_absd(d.x);
+    const double ay = pl__planet_absd(d.y);
+    const double az = pl__planet_absd(d.z);
+
+    plPlanetFace face = PL_PLANET_FACE_POS_Z;
+    double s = 0.0;
+    double t = 0.0;
+
+    if(ax >= ay && ax >= az)
+    {
+        if(d.x >= 0.0)
+        {
+            face = PL_PLANET_FACE_POS_X;
+            s = -d.z / ax;
+            t =  d.y / ax;
+        }
+        else
+        {
+            face = PL_PLANET_FACE_NEG_X;
+            s =  d.z / ax;
+            t =  d.y / ax;
+        }
+    }
+    else if(ay >= ax && ay >= az)
+    {
+        if(d.y >= 0.0)
+        {
+            face = PL_PLANET_FACE_POS_Y;
+            s =  d.x / ay;
+            t = -d.z / ay;
+        }
+        else
+        {
+            face = PL_PLANET_FACE_NEG_Y;
+            s = d.x / ay;
+            t = d.z / ay;
+        }
+    }
+    else
+    {
+        if(d.z >= 0.0)
+        {
+            face = PL_PLANET_FACE_POS_Z;
+            s = d.x / az;
+            t = d.y / az;
+        }
+        else
+        {
+            face = PL_PLANET_FACE_NEG_Z;
+            s = -d.x / az;
+            t =  d.y / az;
+        }
+    }
+
+    if(outFace)
+        *outFace = face;
+    if(outU)
+        *outU = 0.5 * (s + 1.0);
+    if(outV)
+        *outV = 0.5 * (t + 1.0);
+    return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -2489,69 +2144,71 @@ PL_EXPORT void
 pl_load_ext(plApiRegistryI* ptApiRegistry, bool bReload)
 {
     const plPlanetI tApi = {
-        .initialize               = pl_planet_initialize,
-        .cleanup                  = pl_planet_cleanup,
-        .create_planet            = pl_create_planet,
-        .cleanup_planet           = pl_cleanup_planet,
-        .prepare                  = pl_prepare_planet,
-        .get_stream_stats         = pl_planet_get_stream_stats,
-        .reload_shaders           = pl_planet_load_shaders,
-        .set_runtime_options      = pl_planet_set_runtime_options,
-        .get_runtime_options      = pl_planet_get_runtime_options,
+        .initialize = pl_planet_initialize,
+        .cleanup = pl_planet_cleanup,
+        .create_manifest = pl_planet_create_manifest,
+        .cleanup_manifest = pl_planet_cleanup_manifest,
+        .add_source = pl_planet_add_source,
+        .add_tile = pl_planet_add_tile,
+        .finalize_manifest = pl_planet_finalize_manifest,
+        .load_manifest_json = pl_planet_load_manifest_json,
+        .get_manifest_init = pl_planet_get_manifest_init,
+        .get_source_count = pl_planet_get_source_count,
+        .get_source = pl_planet_get_source,
+        .get_tile_count = pl_planet_get_tile_count,
+        .get_tile = pl_planet_get_tile,
+        .manifest_has_payloads = pl_planet_manifest_has_payloads,
+        .get_manifest_path = pl_planet_get_manifest_path,
+        .get_manifest_base_path = pl_planet_get_manifest_base_path,
+        .make_address = pl_planet_make_address,
+        .parent_address = pl_planet_parent_address,
+        .find_tile = pl_planet_find_tile,
+        .select_tile = pl_planet_select_tile,
+        .resolve_tile_path = pl_planet_resolve_tile_path,
+        .choose_source = pl_planet_choose_source,
+        .read_chunk_header = pl_planet_read_chunk_header,
+        .read_chunk_payload = pl_planet_read_chunk_payload,
+        .create_planet = pl_planet_create_planet,
+        .cleanup_planet = pl_planet_cleanup_planet,
+        .create_view = pl_planet_create_view,
+        .cleanup_view = pl_planet_cleanup_view,
+        .render_view = pl_planet_render_view,
+        .get_view_texture = pl_planet_get_view_texture,
+        .get_view_output_texture = pl_planet_get_view_output_texture,
+        .set_runtime_options = pl_planet_set_runtime_options,
+        .get_runtime_options = pl_planet_get_runtime_options,
         .set_view_runtime_options = pl_planet_set_view_runtime_options,
         .get_view_runtime_options = pl_planet_get_view_runtime_options,
-        .set_shaders              = pl_planet_set_shaders,
-        .draw_sphere              = pl_draw_sphere,
-        .draw_polygon             = pl_draw_polygon,
-        .draw_polygon_filled      = pl_draw_polygon_filled,
-        .draw_line                = pl_draw_line,
-        .draw_text                = pl_draw_text,
-        .set_texture              = pl_planet_set_texture,
-        .create_view              = pl_create_planet_view,
-        .cleanup_view             = pl_cleanup_planet_view,
-        .render_view              = pl_render_to_planet_view,
-        .get_view_texture         = pl_get_planet_view_texture,
-        .get_view_output_texture  = pl_get_planet_view_output_texture,
+        .reload_shaders = pl_planet_load_shaders,
+        .set_shaders = pl_planet_set_shaders,
+        .get_render_stats = pl_planet_get_render_stats,
+        .face_uv_to_direction = pl_planet_face_uv_to_direction,
+        .direction_to_face_uv = pl_planet_direction_to_face_uv
     };
     pl_set_api(ptApiRegistry, plPlanetI, &tApi);
 
-    gptMemory           = pl_get_api_latest(ptApiRegistry, plMemoryI);
-    gptImage            = pl_get_api_latest(ptApiRegistry, plImageI);
-    gptFile             = pl_get_api_latest(ptApiRegistry, plFileI);
-    gptProfile          = pl_get_api_latest(ptApiRegistry, plProfileI);
-    gptGfx              = pl_get_api_latest(ptApiRegistry, plGraphicsI);
-    gptFreeList         = pl_get_api_latest(ptApiRegistry, plFreeListI);
-    gptIOI              = pl_get_api_latest(ptApiRegistry, plIOI);
-    gptStarter          = pl_get_api_latest(ptApiRegistry, plStarterI);
-    gptShader           = pl_get_api_latest(ptApiRegistry, plShaderI);
-    gptCollision        = pl_get_api_latest(ptApiRegistry, plCollisionI);
-    gptScreenLog        = pl_get_api_latest(ptApiRegistry, plScreenLogI);
-    gptDraw             = pl_get_api_latest(ptApiRegistry, plDrawI);
-    gptTerrainProcessor = pl_get_api_latest(ptApiRegistry, plPlanetProcessorI);
-    gptGpuAllocators    = pl_get_api_latest(ptApiRegistry, plGPUAllocatorsI);
-    gptImageOps         = pl_get_api_latest(ptApiRegistry, plImageOpsI);
-    gptVfs              = pl_get_api_latest(ptApiRegistry, plVfsI);
-    gptResource         = pl_get_api_latest(ptApiRegistry, plResourceI);
-    gptStats            = pl_get_api_latest(ptApiRegistry, plStatsI);
+    gptMemory = pl_get_api_latest(ptApiRegistry, plMemoryI);
+    gptGfx = pl_get_api_latest(ptApiRegistry, plGraphicsI);
+    gptShader = pl_get_api_latest(ptApiRegistry, plShaderI);
+    gptDraw = pl_get_api_latest(ptApiRegistry, plDrawI);
 
-    const plDataRegistryI* ptDataRegistry = pl_get_api_latest(ptApiRegistry, plDataRegistryI);
-
+    const plDataRegistryI* dataRegistry = pl_get_api_latest(ptApiRegistry, plDataRegistryI);
     if(bReload)
     {
-        gptCtx = ptDataRegistry->get_data("plPlanetContext");
+        gptCtx = dataRegistry ? dataRegistry->get_data("plPlanetContext") : gptCtx;
     }
     else
     {
-        static plPlanetContext tCtx = {0};
-        gptCtx = &tCtx;
-        ptDataRegistry->set_data("plPlanetContext", gptCtx);
+        static plPlanetContext ctx = {0};
+        gptCtx = &ctx;
+        if(dataRegistry)
+            dataRegistry->set_data("plPlanetContext", gptCtx);
     }
 }
 
 PL_EXPORT void
 pl_unload_ext(plApiRegistryI* ptApiRegistry, bool bReload)
 {
-
     if(bReload)
         return;
 
@@ -2565,6 +2222,3 @@ pl_unload_ext(plApiRegistryI* ptApiRegistry, bool bReload)
 
 #define PL_MEMORY_IMPLEMENTATION
 #include "pl_memory.h"
-
-#define PL_STRING_IMPLEMENTATION
-#include "pl_string.h"

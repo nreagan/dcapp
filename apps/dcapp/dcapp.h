@@ -24,7 +24,6 @@
 #include "dc_draw_ext.h"
 #include "dc_draw_backend_ext.h"
 #include "pl_planet_ext.h"
-#include "pl_planet_processor_ext.h"
 
 // general includes
 #include <stdbool.h>
@@ -46,7 +45,6 @@ const plIOI              *_ext_ioi              = NULL;
 const plGraphicsI        *_ext_gfx              = NULL;
 const plGPUAllocatorsI   *_ext_gpu_allocators   = NULL;
 const plPlanetI          *_ext_planet           = NULL;
-const plPlanetProcessorI *_ext_planet_processor = NULL;
 const plVfsI             *_ext_vfs              = NULL;
 const plShaderI          *_ext_shader           = NULL;
 const plCameraI          *_ext_camera           = NULL;

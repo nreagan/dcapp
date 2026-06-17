@@ -7,15 +7,13 @@ set "DCAPP_HOME=%CD%"
 popd
 set "RUN_DIR=%DCAPP_HOME%\pilotlight\out"
 
-if "%~2"=="" (
-    echo Usage: dcapp-planet-chunkgen.bat ^<output_dir^> ^<dem...^> [options]
-    exit /b 1
+if "%~1"=="" (
+    cd /d "%RUN_DIR%"
+    pilot_light.exe -a dcapp-planet-validate --planet-validate-help
+    exit /b %ERRORLEVEL%
 )
 
-set "OUTPUT=%~f1"
-shift
-
-set "ARGS="%OUTPUT%""
+set "ARGS="
 :argloop
 if "%~1"=="" goto endargs
 set "ARG=%~1"
@@ -28,5 +26,5 @@ goto argloop
 :endargs
 
 cd /d "%RUN_DIR%"
-echo pilot_light.exe -a dcapp-planet-chunkgen %ARGS%
-pilot_light.exe -a dcapp-planet-chunkgen %ARGS%
+echo pilot_light.exe -a dcapp-planet-validate%ARGS%
+pilot_light.exe -a dcapp-planet-validate%ARGS%

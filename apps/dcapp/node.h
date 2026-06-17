@@ -514,8 +514,8 @@ typedef struct __NodeText {
 } _NodeText;
 
 typedef struct {
-    char *vertex_path;   // heap-allocated (NULL = keep default "planet.vert")
-    char *fragment_path; // heap-allocated (NULL = keep default "planet.frag")
+    char *vertex_path;   // heap-allocated (NULL = keep legacy default shader)
+    char *fragment_path; // heap-allocated (NULL = keep legacy default shader)
     int   index;
 } _PlanetShaderEntry;
 
@@ -543,7 +543,6 @@ typedef struct __PlanetDef {
     DcGeoCrsGeodetic geodetic_crs;
     DcGeoCrsCartesian cartesian_crs;
     DcGeoCrsPolarStereo polar_crs;
-    bool legacy_projected_origin;
 
     // texture overlays
     _PlanetTextureEntry *sb_textures; // stretchy buffer

@@ -2,48 +2,30 @@
 setlocal enabledelayedexpansion
 
 set "DCAPP_HOME=%~dp0.."
-pushd "%DCAPP_HOME%"
-set "DCAPP_HOME=%CD%"
-popd
-set "RUN_DIR=%DCAPP_HOME%\pilotlight\out"
+pushd "%DCAPP_HOME%\pilotlight\out" >nul
+
+if "%~1"=="" (
+    pilot_light.exe -a dcapp-planet-snapshot --planet-snapshot-help
+    popd >nul
+    exit /b %ERRORLEVEL%
+)
 
 set "ARGS="
-:argloop
-if "%~1"=="" goto endargs
+:loop
+if "%~1"=="" goto run
 if "%~1"=="-h" (
-    set "ARGS=!ARGS! --snapshot-help"
-    shift
-    goto argloop
+    set "ARGS=!ARGS! --planet-snapshot-help"
+) else if "%~1"=="--help" (
+    set "ARGS=!ARGS! --planet-snapshot-help"
+) else (
+    set "ARGS=!ARGS! %~1"
 )
-if "%~1"=="--help" (
-    set "ARGS=!ARGS! --snapshot-help"
-    shift
-    goto argloop
-)
-if "%~1"=="--planet-data" goto patharg
-if "%~1"=="--vertex-shader" goto patharg
-if "%~1"=="--fragment-shader" goto patharg
-if "%~1"=="--output" goto outputarg
-set "ARGS=!ARGS! %~1"
 shift
-goto argloop
+goto loop
 
-:patharg
-set "KEY=%~1"
-shift
-set "ARGS=!ARGS! %KEY% %~f1"
-shift
-goto argloop
-
-:outputarg
-shift
-for %%I in ("%~f1") do if not exist "%%~dpI" mkdir "%%~dpI"
-set "ARGS=!ARGS! --output %~f1"
-shift
-goto argloop
-
-:endargs
-
-cd /d "%RUN_DIR%"
+:run
 echo pilot_light.exe -a dcapp-planet-snapshot%ARGS%
 pilot_light.exe -a dcapp-planet-snapshot%ARGS%
+set "RESULT=%ERRORLEVEL%"
+popd >nul
+exit /b %RESULT%
