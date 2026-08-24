@@ -1,0 +1,742 @@
+DCAPP src/app FILE GUIDE
+========================
+
+Snapshot: 2026-08-24, after the owner-qualified rename, formatting, and comment pass
+Scope: every file directly under src/app (44 files, 22,535 lines)
+
+This guide describes what the files do today. It is an orientation document,
+not a proposed refactor. The application composition root is apps/dcapp.c,
+which sits outside this directory but is important for understanding how these
+modules are assembled.
+
+
+THE SHORT VERSION
+-----------------
+
+dcapp turns authoring XML into a live display in four broad stages:
+
+  1. xml_preprocessor.c preprocesses the authoring XML.
+  2. display_builder.c compiles the cleaned XML into a retained model.
+  3. display_model.c owns that model and its variable registry; node.h defines
+     the retained records; variable_registry.c owns the referenced value storage;
+     value.c implements scalar value behavior.
+  4. display_runtime.c interprets the retained model every frame and asks draw.c
+     and the resource services to perform the actual work.
+
+The core pipeline names are intentionally literal:
+
+  xml_preprocessor.c = XML authoring preprocessor
+  display_builder.c  = startup display-model builder/compiler
+  display_model.c    = retained display-model store
+  display_runtime.c  = display runtime/interpreter
+  draw.c             = frame-local drawing, interaction, and command recorder
+  planet.c           = stable planet-resource service
+
+These adopted names expose the authoring -> model -> runtime layering directly.
+In particular, display_runtime.c is not merely a renderer, and
+display_builder.c is not a generic XML helper.
+
+
+WHO OWNS WHAT
+-------------
+
+  apps/dcapp.c
+    Owns lifecycle order and holds pointers to the subsystem contexts.
+
+  DcAppXmlPreprocessorContext (xml_preprocessor.c)
+    Owns the libxml document and preprocessing state.
+
+  DcAppDisplayModelContext (display_model.c)
+    Owns the variable registry, flat node array, root Window index, parsed
+    planet definitions, and the registry of PlanetView node indices.
+
+  DcAppDisplayLogicContext (display_logic.c)
+    Owns the loaded user library, lifecycle callbacks, scheduler state, and
+    user-data pointer.
+
+  DcAppDataLinkContext (data_link.c)
+    Owns Trick and Edge connections and their variable bindings.
+
+  DcAppFontContext
+    Owns font registrations and atlas-facing font records.
+
+  DcAppTextureContext
+    Owns the registered GPU textures, bind groups, and upload staging buffer.
+
+  DcAppPixelstreamContext
+    Owns transport/decode state and CPU frame buffers. Its texture IDs refer to
+    GPU resources owned by DcAppTextureContext.
+
+  DcAppPlanetContext
+    Owns stable planet, view, breadcrumb, and GeoJSON resources.
+
+  DcAppDisplayRuntimeContext (display_runtime.c)
+    Borrows the model and services, then owns interpreter scratch data and
+    deferred Set operations.
+
+  DcAppDrawContext (draw.c)
+    Owns frame-local draw batches, transform/container/stencil scopes, planet
+    view queues, and mouse interaction state.
+
+
+STARTUP AND FRAME FLOW
+----------------------
+
+Startup, simplified:
+
+  apps/dcapp.c
+    -> initializes each module's PilotLight API pointers
+    -> creates XML-preprocessor, display-model, planet, display-logic, and
+       data-link contexts
+    -> xml_preprocessor.c preprocesses the XML DOM and writes the cleaned cache
+    -> display_builder.c starts building the retained display model
+         -> parsing Window invokes a bootstrap callback
+         -> the callback creates GPU-dependent font, texture, pixelstream,
+            draw, and display-runtime contexts
+         -> XML parsing resumes and registers nodes/resources/bindings
+    -> variable_registry.c is sealed so published value pointers cannot move
+    -> display_runtime.c materializes parsed planet definitions
+    -> the user logic library receives its API tables and is initialized
+
+Each frame, simplified:
+
+  data_link update
+    -> pixelstream update
+    -> fixed-rate user logic update
+    -> refresh cached value representations
+    -> draw context begin
+    -> variable-driven planet update and per-planet preparation
+    -> display runtime recursively interprets the node tree in XML order
+    -> draw context end
+    -> deferred Set operations flush
+    -> variable stacks reset
+    -> ordered 2D/3D draw batches submit
+    -> mouse interaction state commits for the next traversal
+
+The XML-ordered, single-pass traversal is intentional. Function callbacks,
+stencils, nested transforms, button state, immediate Sets, DrawFunctions, and
+planet containers all have observable ordering semantics.
+
+
+HEADER NAMING CONVENTION
+------------------------
+
+Cross-file names are owner-qualified because C has no native namespace. The
+module stem predicts the public prefixes:
+
+  display_model.c
+    DcAppDisplayModelContext
+    dc_app_display_model_*
+    DC_APP_DISPLAY_MODEL_*
+
+  variable_registry.c
+    DcAppVariableRegistryContext
+    DcAppVariableRegistryVariableIndex
+    DcAppVariableRegistryValueIndex
+    dc_app_variable_registry_*
+    DC_APP_VARIABLE_REGISTRY_*
+
+Opaque subsystem state ends in Context. Module-owned shared types carry the
+same owner, as in DcAppDrawAlignmentType. Static helpers and local variables
+stay concise. The generated logic header is a separate, deliberately shorter
+Dc... ABI and does not mechanically mirror these internal spellings.
+
+The suffixes are meaningful, although not every module needs every layer:
+
+  *_types.h
+    Dependency-light enums, scalar IDs, and basic shared types. These headers
+    avoid pulling in a complete subsystem.
+
+  *_api.h
+    Capability records and function tables exposed to dynamically loaded
+    display logic. These are ABI contracts, not the complete internal module
+    interfaces. apps/dcapp_genheader.c manually mirrors them into the generated
+    short-name logic header, so changes must remain ABI-synchronized.
+
+  <module>.h
+    The concrete/internal application-facing module interface.
+
+  *_internal.h
+    A narrow friend interface shared by internal translation units but omitted
+    from the loaded-logic API.
+
+  display_logic_callbacks.h
+    A special dependency-light header containing callback signatures shared by
+    the loader and retained nodes.
+
+  node.h and vector.h
+    Data-definition headers with no matching implementation file of their own.
+
+
+FILE-BY-FILE GUIDE
+==================
+
+
+A. AUTHORING XML AND MODEL CONSTRUCTION
+---------------------------------------
+
+xml_element_types.h (82 lines)
+  Defines DcAppXmlElementType, the complete XML/source-language vocabulary. It
+  includes drawable tags, authoring-only tags such as Constant/Default/Style/
+  Include, logic and IO tags, child-only tags such as Arg and Vertex, and the
+  planet tags. This is intentionally different from DcAppNodeType: not every
+  source element survives into the runtime model.
+
+xml_element.h (22 lines)
+  Declares the small element-name mapping API: enum to canonical string,
+  string to enum, and libxml node to enum. It forward-declares the libxml node
+  so consumers do not need the complete XML headers.
+
+xml_element.c (311 lines)
+  Implements the element vocabulary with a switch for enum-to-name and a long
+  strcmp chain for name-to-enum. Non-element libxml nodes map to NONELEM;
+  unknown element names warn and map to UNDEFINED. xml_preprocessor.c and
+  display_builder.c both use this file, so xml_element_types.h plus both mappings
+  must stay synchronized when a tag is added.
+
+xml_preprocessor.h (36 lines)
+  Declares the opaque DcAppXmlPreprocessorContext lifecycle, preprocessing and
+  cached preprocessed-output operations, environment export, and accessors for
+  the XML root and relevant directories. This is the small public boundary
+  around a much larger authoring phase.
+
+xml_preprocessor.c (1,544 lines)
+  Loads and owns the libxml document, canonicalizes the display paths, records
+  command-line constants, exports dcapp/display environment paths, and
+  preprocesses authoring conveniences before runtime parsing. The transforms
+  include constants and environment interpolation, Include expansion,
+  Dummy-wrapper splicing, Default and Style expansion, static If resolution,
+  AlignX/AlignY shorthand, and _Directory propagation for included files.
+
+  It also registers built-in enum constants and a large color palette, which
+  accounts for a noticeable part of the file. The cleaned DOM remains owned by
+  DcAppXmlPreprocessorContext and is serialized into the cache on every startup.
+  By default the cache name is derived from the source XML; --preprocessed
+  selects a different cache basename. This is an authoring-language preprocessor
+  rather than a general settings-file parser.
+
+display_builder.h (50 lines)
+  Declares the startup-only DcAppDisplayBuilderContext and its recursive entry
+  point, dc_app_display_builder_process_xml_node. The constructor borrows the
+  app, display-model, display-logic, and data-link contexts. Font, texture, and
+  pixelstream contexts are injected after the Window bootstrap callback
+  initializes GPU-dependent services.
+
+display_builder.c (6,030 lines)
+  Compiles the preprocessed XML DOM into the retained runtime model. It
+  classifies elements with xml_element.c, dispatches most retained tags to
+  _process_xml_node_* handlers, registers literal or @variable-backed values in
+  variable_registry.c, constructs DcAppNode payloads, appends them to
+  display_model.c, and links the tree with node indices. It also validates
+  parent/child placement while building.
+
+  This builder has broad but legitimate startup responsibilities. It loads the
+  user logic library and resolves Function/DrawFunction symbols; configures
+  Trick and Edge bindings; registers fonts, textures, and pixelstream sources;
+  creates parsed planet definitions; and expands XML GeoJSON into static planet
+  nodes. It does not create runtime planet resources--display_runtime.c does
+  that after parsing is complete.
+
+  The Window handler is a lifecycle hinge: it registers Window, calls back into
+  apps/dcapp.c to initialize graphics services, receives those services through
+  setters, parses the Window's children, then builds the font atlas. That
+  temporal bootstrap is explicit but makes this file harder to follow.
+
+  Phase distinction: xml_preprocessor.c consumes authoring-time Constant,
+  Default, Style, Include, and static If constructs; display_builder.c consumes
+  the cleaned tree and builds runtime If/state nodes. Its handlers for
+  already-consumed authoring tags are mostly defensive fallbacks.
+
+  Not every XML tag has an independent dispatch handler. DrawFunction parses its
+  child Arg elements inline. ButtonPressed and ButtonReleased are recognized by
+  xml_element.c and apps/dcapp_validate.c, and declarations for their builder
+  handlers exist, but the definitions and dispatch cases are currently missing.
+  Those two tags therefore fall through as undefined; this is an implementation
+  gap rather than an intentional authoring-only exception.
+
+
+B. VALUES AND THE RETAINED DISPLAY MODEL
+----------------------------------------
+
+value_types.h (12 lines)
+  Defines DcAppValueType: undefined, string, integer, double, and boolean. It is
+  a leaf header used wherever the scalar type tag is needed without the
+  complete DcAppValue record.
+
+value.h (87 lines)
+  Defines DcAppValue. One field selected by type is authoritative, while fixed
+  string, integer, double, and boolean representations are cached together.
+  The API creates, parses, refreshes, compares, and exposes the address of the
+  authoritative field to generated logic. It also defines DcAppValue2/3/4 alias
+  composites; these currently appear unused outside the header and look like
+  legacy convenience types.
+
+value.c (214 lines)
+  Implements the scalar conversions and comparisons. Refresh operations derive
+  all cached forms from the authoritative form, letting XML, logic, IO, and the
+  display runtime view a value in different representations. The app refreshes
+  named values after external IO and user logic have written their authoritative
+  fields and before display-runtime interpretation.
+
+variable_registry_types.h (7 lines)
+  Defines two semantic integer handles:
+  DcAppVariableRegistryVariableIndex for a named variable and
+  DcAppVariableRegistryValueIndex for a value slot. Keeping them separate
+  documents whether a field identifies a binding or the stored value behind it.
+
+variable_registry.h (64 lines)
+  Declares the opaque variable/value arena. It covers value registration,
+  name-to-variable and variable-to-value lookup, explicit-write sequence
+  tracking, assignment from strings, temporary push/pop stacks, warning policy,
+  and sealing. Index zero is reserved as undefined. Its comments document the
+  key lifetime rule: value pointers can move during registration but remain
+  stable after sealing.
+
+variable_registry.c (233 lines)
+  Stores packed variable names, variable metadata, and DcAppValue slots in
+  stretchy buffers. A trimmed value beginning with @ resolves to an existing
+  named variable's value slot; otherwise a new literal value is registered.
+  This is how many node properties can point at the same live variable.
+
+  It also maintains per-variable stacks for Set Push/Pop behavior and a write
+  sequence that lets the data-link layer distinguish explicit writes from an
+  unchanged cached value. Registration is forbidden after seal so generated
+  logic can safely retain typed pointers. Name lookup is currently linear.
+
+node_types.h (142 lines)
+  Defines the lightweight runtime discriminators and behavior enums: node
+  indices and sentinels, DcAppNodeType, mutable state flags, parse-time config
+  flags, button types, conditional operations, Set operations, and stencil
+  child types. DcAppNodeType is the executable/retained vocabulary, whereas
+  DcAppXmlElementType is the source XML vocabulary.
+
+node.h (721 lines)
+  Defines the complete retained display-model schema; there is intentionally no
+  node.c. It contains one payload struct for each runtime node family and a
+  tagged DcAppNode union with parent and next-sibling indices. Relevant payloads
+  hold a child index. Indices are used because the display model's stretchy node
+  buffer can move in memory.
+
+  Most authored properties are stored as
+  DcAppVariableRegistryValueIndex values, or as the node-owned
+  DcAppNodeValueIndex2/3/4 composites, rather than copied scalars. This lets
+  them remain bound to @variables. The records also contain resource IDs,
+  callback pointers, owned variable-size buffers, and mutable runtime
+  caches/state such as blink timing, button flags, last-fire values, text
+  caches, breadcrumbs, and active shader selection.
+
+  This header also contains display-model-owned planet definition, shader, and
+  texture-entry records even though those records are not themselves nodes. XML
+  constructs this schema, the display model owns and frees it, and the display
+  runtime interprets and mutates it.
+  Mixing immutable parse results, mutable state, callback ABI fields, owned
+  buffers, and non-node planet records in one large schema is a genuine source
+  of navigation friction, even though the tagged-union model itself is coherent.
+
+display_model.h (55 lines)
+  Declares the opaque DcAppDisplayModelContext retained-model store: lifecycle,
+  access to its owned variable registry, append/index access to nodes, parsed
+  planet-definition storage, PlanetView node registration, and root Window
+  selection. A returned node pointer remains valid only until another node is
+  appended; the stable identity is its index.
+
+display_model.c (219 lines)
+  Owns but does not parse or render the display model.
+  DcAppDisplayModelContext holds the variable registry, flat node buffer, root
+  Window index, separately allocated planet definitions, and the list of
+  PlanetView node indices. Separate allocation keeps planet-definition pointers
+  stable when the registry grows.
+
+  Its destructor performs type-specific cleanup of every node-owned stretchy
+  buffer/string and all nested planet-definition allocations. This makes
+  display_model.c tightly aware of node.h ownership details, but that is
+  consistent with its role as the model owner.
+
+
+C. DYNAMIC DISPLAY LOGIC
+------------------------
+
+display_logic_callbacks.h (19 lines)
+  Defines the dependency-light DcAppDisplayLogic*Fn signatures for
+  display_pre_init, display_init, display_draw/update, display_close, XML
+  Function callbacks, and scoped DrawFunction callbacks. node.h can embed
+  callback pointers without depending on the loader implementation.
+
+display_logic_api.h (29 lines)
+  Defines the host-to-loaded-logic capability aggregate, not the entire logic
+  subsystem. DcAppDisplayLogicApi exposes get_variable, and
+  DcAppDisplayLogicInit bundles the opaque app context plus the app, draw,
+  mouse, texture, and planet API tables. apps/dcapp.c assembles it and passes it
+  to display_pre_init. The generated header keeps the shorter DcAppApi/DcInit
+  public spellings.
+
+display_logic.h (33 lines)
+  Declares the opaque DcAppDisplayLogicContext: create/destroy, library
+  load/query, arbitrary symbol lookup, lifecycle dispatch, fixed-rate update,
+  and user-data access. XML uses library/symbol lookup; the app root uses
+  lifecycle operations.
+
+display_logic.c (204 lines)
+  Owns the dynamic library, four lifecycle callback pointers, user data, and
+  fixed-step timing state. Library loading resolves relative paths, tolerates a
+  supplied platform suffix, and tries normal and lib-prefixed .so/.dylib/.dll
+  names. It resolves display_pre_init, display_init, display_draw, and
+  display_close; XML resolves additional named callbacks through the same
+  context.
+
+  A nonpositive/invalid update rate calls display_draw once per host frame. A
+  positive rate uses an accumulator, clamps a long frame delta to 0.25 seconds,
+  runs at most 16 catch-up updates, and discards excess backlog. Destruction
+  calls display_close before unloading the library.
+
+
+D. DRAWING AND DISPLAY EXECUTION
+--------------------------------
+
+vector.h (183 lines)
+  Header-only float and double vectors in 2D, 3D, and 4D. Anonymous union views
+  provide x/y/z/w, r/g/b/a, u/v, roll/pitch/yaw, and array access over the same
+  storage. These plain C layouts keep the loaded-logic ABI independent of
+  PilotLight's internal math types; this file provides data shapes, not math
+  operations.
+
+draw_types.h (14 lines)
+  Defines only DcAppDrawAlignmentType: horizontal and vertical alignment values
+  plus undefined. It is shared by preprocessing constants, nodes, and public
+  draw placement without importing the full drawing subsystem.
+
+draw_api.h (209 lines)
+  Defines the logic/callback-facing drawing contract. Its POD records describe
+  strokes, text styles, placement, mouse state, resolved draw areas/results,
+  and borrowed DrawFunction arguments. DcAppDrawApi is a large function table
+  for basic and extended 2D primitives, container scopes, stencils, planet
+  views, and planet overlays. DcAppMouseApi registers hit shapes and exposes
+  hover/press/release/active/click state.
+
+  The DcAppDrawPlanetViewHandle is borrowed for the current draw scope. The API
+  records are referenced by display_logic_api.h through forward-declared table
+  pointers; apps/dcapp.c includes both headers and installs the concrete tables.
+  This is not the draw context's lifecycle interface.
+
+draw_internal.h (55 lines)
+  Friend interface between display_runtime.c and draw.c. It exposes the raw
+  screen-space mouse state, a numeric internal target-ID namespace distinct
+  from user logic's string IDs, and planet polygon/ellipse helpers that keep
+  line-enabled/fill-enabled state independent from color alpha. It is internal
+  to the drawing/runtime layer, not private to one .c file.
+
+draw.h (181 lines)
+  Concrete internal draw-service interface. It adds context creation and the
+  begin/end/submit/commit frame lifecycle; current-area and transform push/pop;
+  scope snapshots; and the concrete functions installed into the public draw
+  and mouse tables. It also exposes lower-level display-runtime helpers
+  involving PilotLight/DC Draw types, raw image quads, 3D spheres, text options,
+  and raw planet primitives.
+
+  DcAppDrawScope snapshots all mutable stack depths so a DrawFunction callback
+  cannot leak a container, stencil, or planet scope into later XML siblings.
+
+draw.c (2,918 lines)
+  Owns DcAppDrawContext and translates semantic draw requests into ordered
+  dc_draw commands. The context tracks current transformed area, screen/local
+  mouse state and captured targets, container/scope/stencil stacks, queued
+  planet views, and reusable 2D/3D draw-list batches. Switching between 2D and
+  3D opens a new batch so final submission preserves original call order.
+
+  It implements placement/alignment/rotation, primitive and text recording,
+  texture-ID resolution, mouse hit testing and capture, stencil phases, and
+  public draw/mouse function tables. Frame begin derives mouse edges and resets
+  reusable state; end unwinds scopes and flushes scoped work; submit sends
+  batches to the backend; commit publishes completed hit targets and interaction
+  state for the next traversal.
+
+  It also owns much of the planet draw path: view cameras, render-to-texture
+  queueing, local tangent-plane scopes, geodetic/cartesian conversion, overlay
+  primitives and labels, and GeoJSON drawing. This is why draw.c is much larger
+  than a thin primitive wrapper.
+
+  Naming trap: public image functions accept a stable DcAppTextureId, while
+  some lower-level image-quad helpers accept a raw backend bind-group integer
+  that is also named texture_id.
+
+display_runtime.h (42 lines)
+  Declares the opaque DcAppDisplayRuntimeContext and injects its borrowed
+  dependencies: app callback context, display model, fonts, textures, planets,
+  pixelstreams, and display logic. Its four phases are post-XML planet
+  initialization, per-frame planet update/preparation, recursive
+  render/execute, and post-traversal deferred-Set flush.
+
+display_runtime.c (6,295 lines)
+  This is the central display runtime/interpreter, not just a GPU renderer. It
+  starts at the display model's Window, walks child/sibling indices recursively
+  in XML order, dispatches on DcAppNodeType, resolves variable-backed properties
+  from variable_registry.c, computes node layout/transforms, calls draw.c,
+  updates interaction state, and recurses while parent scopes remain active.
+
+  The handlers cover all 2D primitives, text formatting/caching, pixelstreams,
+  stencils, and planet views/overlays. The same traversal also executes
+  non-drawing behavior: blink timing, buttons, conditionals, mouse-motion
+  variable writes, Function and DrawFunction callbacks, and immediate/deferred
+  Set operations. Deferred Sets are queued so siblings see the original values
+  during the traversal, then applied afterward.
+
+  It additionally bridges parsed XML planet definitions to planet.c: creating
+  planets/views after XML parsing, tracking variable-driven texture refresh,
+  light direction, and shader selection, storing resulting handles back in
+  definitions/nodes, and preparing every shared planet once per frame through a
+  temporary GPU command buffer. It borrows nearly every runtime service because
+  it is the high-level policy layer. Its fan-in is expected; its name and size
+  obscure the breadth of that policy.
+
+
+E. RUNTIME RESOURCE SERVICES
+----------------------------
+
+font.h (24 lines)
+  Declares the font registry/atlas service. XML registers custom paths during
+  parsing, then builds the atlas once; the display runtime asks for the default
+  font or resolves a custom font tier based on rendered size.
+
+font.c (235 lines)
+  Creates the default Vera SDF font and installs Vera as PilotLight Starter's
+  default. It deduplicates custom paths, reserves index zero, creates 13, 25,
+  and 50 pixel SDF tiers for each custom font, builds the GPU atlas after all
+  registrations, and returns the nearest adequate tier at render time. The app/
+  draw backend, rather than this context, owns final atlas/backend teardown.
+
+texture_types.h (10 lines)
+  Defines internal DcAppTextureIndex (signed int) and public stable
+  DcAppTextureId (uint32_t). Zero is invalid. Both currently refer to the same
+  append-only context registry slot, despite the different names and signedness.
+
+texture_api.h (17 lines)
+  Defines the deliberately small loaded-logic texture table: load an image and
+  query a texture's size through DcAppContext. apps/dcapp.c supplies the adapter
+  functions that recover the private texture context. GPU creation/update and
+  raw handles are intentionally absent.
+
+texture.h (44 lines)
+  Declares the internal texture manager: context lifecycle, blank/RGBA GPU
+  texture creation, XML-relative and app-root-relative image loading, RGBA
+  updates, size lookup, and raw bind-group/texture handle access for draw and
+  display-runtime internals. Real registry indices start at one.
+
+texture.c (426 lines)
+  Owns GPU textures, draw bind groups, a reusable grow-only upload staging
+  buffer, the asset root, and append-only name/texture arrays. It borrows shared
+  GPU allocator interfaces; apps/dcapp.c performs allocator-extension teardown.
+  It canonicalizes and deduplicates file-backed image paths, decodes images to
+  RGBA, chooses buddy versus dedicated GPU allocation, uploads pixels, and
+  exposes the backend handles needed by drawing.
+
+  XML uses it for authored images; pixelstream.c creates and updates dynamic
+  textures; draw.c resolves public IDs; display_runtime.c uses some raw
+  bind-group paths for internal image/sphere drawing.
+
+pixelstream_types.h (12 lines)
+  Defines the SHMEM/MJPEG source kind and DcAppPixelstreamSourceIndex. It is a
+  leaf header suitable for node payloads.
+
+pixelstream.h (47 lines)
+  Declares the internal pixelstream manager. It defines the invalid source
+  index, the 3840x2160 maximum allocation, and the small state returned to the
+  display runtime: texture ID, connection flag, and current content dimensions.
+  The API creates/destroys the context, finds/adds shared sources, queries them,
+  and updates all sources once per frame.
+
+pixelstream.c (266 lines)
+  Adapts src/pixelstream/mjpeg.* and src/pixelstream/shmem.* into shared
+  renderable sources. Sources are deduplicated by type plus source key, so
+  multiple XML nodes do not fetch the same feed repeatedly. Each source owns
+  transport/decode state and CPU frame storage, and retains the ID of a dedicated
+  maximum-size GPU texture owned by texture.c. New transport data refreshes the
+  CPU frame; every connected update uploads the most recently retained frame
+  through texture.c.
+
+  The display runtime uses the current frame dimensions to crop UVs against the
+  fixed maximum-size allocation, then draws either the stream or its test
+  pattern.
+
+planet_types.h (38 lines)
+  Defines dependency-light planet enums: coordinate system, attitude frame,
+  view/debug flags, and GeoJSON style-override flags. Nodes, the XML
+  preprocessor, draw, and public planet contracts can share these without
+  importing PilotLight types.
+
+planet_api.h (86 lines)
+  Defines the logic-facing planet feature contract: stable opaque handles for
+  planets, views, breadcrumbs, and GeoJSON; public create/options/style/local-
+  transform records; borrowed breadcrumb-point results; limits; and the
+  DcAppPlanetApi function table. It covers creation/lookup, geodetic, Cartesian,
+  and already-projected texture origins with optional slot selection, light
+  direction, views and shaders, GeoJSON, and breadcrumbs.
+
+  Some records are also draw concepts and are consumed by draw_api.h, so this
+  file is a shared public planet-feature contract rather than a resource-only
+  API. apps/dcapp.c wraps context-dependent planet.c calls into this table.
+
+planet.h (75 lines)
+  Declares the internal planet service. It includes the public contract, adds
+  DcAppPlanetContext lifecycle, exposes implementations that accept the private
+  context directly, and provides registry/metadata accessors for counts,
+  indices, radius, coordinate systems, and legacy projected-origin behavior.
+  Raw plPlanet/plPlanetView accessors are deliberate display-runtime/draw
+  integration escape hatches.
+
+planet.c (882 lines)
+  Owns stable runtime planet, view, breadcrumb, and GeoJSON resources and adapts
+  them to PilotLight's planet extension. Public handles point to separately
+  allocated objects, so growth of internal registries cannot invalidate them.
+  The context also owns its asset root and performs lazy planet-extension setup.
+
+  Planet creation reads processed .planet.json metadata, validates/prepares
+  terrain resources, and creates matching geodetic/cartesian/polar CRS helpers.
+  Texture setters convert geodetic or Cartesian origins into projected meters,
+  accept already-projected origins directly, and preserve the historical
+  mirrored-longitude/Y convention when legacy metadata requires it. View
+  creation manages render targets and retained shader paths. Breadcrumbs enforce
+  finite coordinates, spacing, and maximum count; GeoJSON loading returns a
+  retained handle. Destruction unwinds these resources in dependency order.
+
+  The XML planet path is deliberately split: display_builder.c builds
+  definitions, display_model.c owns them, display_runtime.c resolves and updates
+  them, planet.c owns resulting resources, and draw.c renders views/overlays.
+  There are also parallel XML and logic-facing paths for breadcrumbs and
+  GeoJSON. That spread is the hardest cross-file feature to trace in src/app.
+
+
+F. EXTERNAL EDGE/TRICK DATA LINKS
+---------------------------------
+
+data_link.h (35 lines)
+  Declares the opaque external-variable synchronization service. It creates
+  Edge and Trick connections, adds RX/TX bindings, and updates them against a
+  DcAppVariableRegistryContext. The header explicitly notes that each binding
+  call targets the most recently added connection of that protocol.
+
+data_link.c (327 lines)
+  Bridges registered variables to the lower-level src/edge.c and src/trick.c
+  clients. Each connection owns its transport, RX/TX bindings, optional
+  connected-status variable, previous connection state, and cached transmitted
+  values/write sequences.
+
+  Per frame it detects outgoing writes/changes, queues them to the transport,
+  updates the connection, writes connection status back as boolean/integer/
+  string, and converts fresh incoming strings into the bound DcAppValue. The
+  Edge and Trick paths are structurally very similar, which explains the
+  duplication. XML constructs these objects; apps/dcapp.c updates them before
+  user logic.
+
+  The "bind to the most recently added connection" API keeps XML construction
+  simple but makes correct nesting/order an implicit contract rather than an
+  explicit connection handle.
+
+
+DEPENDENCY MAP
+--------------
+
+This is a simplified subsystem map, not an exhaustive include graph.
+
+  apps/dcapp.c
+  |-- xml_preprocessor --> xml_element
+  |-- display_builder ---> xml_element, display_model, variable_registry, value,
+  |                         node, font, display_logic, texture, pixelstream,
+  |                         data_link, planet API types/limits, GeoJSON
+  |-- display_runtime ---> display_model, variable_registry, value, node, draw,
+  |                         draw_internal, font, display_logic, texture,
+  |                         pixelstream, planet, geo, PilotLight extensions
+  |-- draw --------------> texture, planet, geo, GeoJSON,
+  |                         dc_draw/PilotLight extensions
+  |-- pixelstream -------> texture, MJPEG, shared memory
+  |-- display_model -----> variable_registry, node
+  |-- data_link ---------> variable_registry, value, Trick, Edge
+  |-- planet ------------> PilotLight planet, geo, GeoJSON, VFS
+  |-- variable_registry -> value
+  |-- texture -----------> graphics, image, GPU allocation
+  |-- font --------------> draw/font atlas and GPU mechanisms
+  `-- display_logic -----> dynamic-library and time/file utilities
+
+At the subsystem level this graph is acyclic. High fan-in at display_builder.c
+and display_runtime.c is expected because they are upper-layer orchestrators;
+lower-level resource services do not reach back into XML or the display model.
+
+
+WHY THE DIRECTORY FEELS MESSY
+-----------------------------
+
+1. The responsibilities are now named accurately, but the vocabulary is long.
+   Owner-qualified names such as DcAppVariableRegistryValueIndex make ownership
+   predictable at a glance, at the cost of more visual weight in node.h and the
+   two large policy files.
+
+2. Two files dominate the directory.
+   display_builder.c and display_runtime.c contain 12,325 lines together--about
+   55% of src/app.
+   Both centralize handler families for most display-language features. That
+   keeps the source and runtime dispatches discoverable, but makes each file
+   expensive to scan.
+
+3. Node behavior is intentionally split four ways.
+   node.h defines records, display_builder.c constructs them, display_model.c
+   owns them, and display_runtime.c interprets them. There is no node.c because
+   "node" is a data model, not a service. This is coherent once known, but
+   surprising at first.
+
+4. The header layers are only semi-uniform.
+   Draw uses types/API/internal/concrete layers; texture uses types/API/concrete;
+   pixelstream uses types/concrete; font and display runtime need only concrete
+   headers. The suffix rules are reasonable, but the uneven file sets look
+   accidental.
+
+5. Planet behavior crosses the most boundaries.
+   Parsing, model ownership, materialization/update, resource ownership, and
+   drawing live in display_builder.c, display_model.c/node.h,
+   display_runtime.c, planet.c, and draw.c.
+
+6. Several terms overlap.
+   DcAppTextureIndex and DcAppTextureId currently name the same registry slot,
+   while a few lower-level helpers call a raw bind-group integer texture_id.
+   XML element types and runtime node types are separate vocabularies. "Root"
+   in XML-preprocessor APIs can mean the XML root or an installation/display
+   directory.
+
+7. Some builder relationships are temporal or implicit.
+   XML parsing pauses at Window to bootstrap GPU services, then resumes. Edge/
+   Trick bindings and some planet children attach to the most recently created
+   parent object rather than using an explicit handle.
+
+The overall verdict: after the naming pass, this is primarily navigation debt
+around two very large policy files--not a circular-dependency or ownership
+free-for-all. The subsystem contexts and dependency direction are visible in
+the authoring/model/runtime/resource names.
+
+
+SUGGESTED READING ORDER
+-----------------------
+
+For a fast architectural pass:
+
+  1. apps/dcapp.c (especially startup, bootstrap, update, and shutdown)
+  2. xml_element_types.h and node_types.h (source versus runtime vocabularies)
+  3. node.h (the retained records)
+  4. display_model.c and variable_registry.c/value.c (ownership and live values)
+  5. xml_preprocessor.c public functions, then display_builder.c dispatch and
+     Window handler
+  6. display_runtime.c dispatch, one simple primitive, Button, Set, and
+     PlanetView
+  7. draw.h/draw.c frame lifecycle
+  8. texture.c, font.c, pixelstream.c, planet.c, and data_link.c as needed
+  9. display_logic_api.h, display_logic_callbacks.h, and display_logic.c for
+     loaded logic
+
+When tracing one XML feature, use this route:
+
+  DcAppXmlElementType entry
+    -> display_builder.c _process_xml_node_<feature>
+    -> DcAppNode payload in node.h
+    -> DcAppNodeType entry
+    -> display_runtime.c _render/_execute_<feature>
+    -> draw/resource call
+
+When tracing an authoring-only feature, start in xml_preprocessor.c instead; it
+may be removed before display_builder.c ever sees the final tree.
