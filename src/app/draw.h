@@ -24,14 +24,6 @@ struct DcAppTextureContext;
 #define DCAPP_DRAW_POINT_COUNT_MAX 65536
 #endif
 
-typedef struct DcAppDrawScope {
-    DcAppDrawArea area;
-    int container_count;
-    int stencil_count;
-    int planet_view_count;
-    int planet_container_count;
-} DcAppDrawScope;
-
 typedef struct DcAppDrawFrameInput {
     plVec2 mouse_position;
     bool mouse_position_valid;
@@ -52,8 +44,6 @@ void dc_app_draw_context_commit(DcAppDrawContext *draw_ctx);
 // renderer nodes install resolved frames while callbacks use container helpers
 void dc_app_draw_context_push(DcAppDrawContext *draw_ctx, plVec2 position, plVec2 dimensions, const plMat4 *transform);
 void dc_app_draw_context_pop(DcAppDrawContext *draw_ctx);
-DcAppDrawScope dc_app_draw_scope_begin(DcAppDrawContext *draw_ctx);
-void dc_app_draw_scope_end(DcAppDrawContext *draw_ctx, DcAppDrawScope scope);
 
 //~ primitive drawing
 

@@ -7,6 +7,9 @@
 
 typedef uint64_t DcAppDrawTargetId;
 
+int dc_app_draw_context_planet_view_count(DcAppDrawContext *draw_ctx);
+void dc_app_draw_context_finish_planet_views(DcAppDrawContext *draw_ctx, int first_view);
+
 // node drawing uses screen-space input because it resolves its own transforms
 const DcAppMouse *dc_app_draw_context_get_screen_mouse(DcAppDrawContext *draw_ctx);
 

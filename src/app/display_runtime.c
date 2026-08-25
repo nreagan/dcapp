@@ -2333,14 +2333,13 @@ static void _execute_draw_function(DcAppDrawContext *ctx, DcAppDisplayRuntimeCon
         sbpush(renderer->sb_draw_function_args, resolved);
     }
 
-    // contain user draw stacks so they cannot affect later siblings
-    DcAppDrawScope scope = dc_app_draw_scope_begin(ctx);
+    int first_planet_view = dc_app_draw_context_planet_view_count(ctx);
     DcAppDrawFuncArgs args = {
         .count = (uint32_t)arg_count,
         .values = arg_count > 0 ? renderer->sb_draw_function_args : NULL,
     };
     node->draw_function.callback(ctx, &args, dc_app_display_logic_user_data(renderer->logic));
-    dc_app_draw_scope_end(ctx, scope);
+    dc_app_draw_context_finish_planet_views(ctx, first_planet_view);
 }
 
 //~ images
@@ -5705,8 +5704,7 @@ static void _render_planet_view(DcAppDrawContext *ctx, DcAppDisplayRuntimeContex
     bool use_ortho = (node->planet_view.orthographic != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED &&
                       dc_app_variable_registry_get_value(renderer->lookup, node->planet_view.orthographic)->value_boolean);
 
-    // bound queued planet work to this sibling
-    DcAppDrawScope scope = dc_app_draw_scope_begin(ctx);
+    int first_planet_view = dc_app_draw_context_planet_view_count(ctx);
     dc_app_draw_context_push(ctx, (plVec2){0.0f, 0.0f}, (plVec2){dimension[0], dimension[1]}, &transform);
     DcAppDrawPlanetViewHandle draw_view = NULL;
     bool view_added = false;
@@ -5781,7 +5779,7 @@ static void _render_planet_view(DcAppDrawContext *ctx, DcAppDisplayRuntimeContex
     }
 
     dc_app_draw_context_pop(ctx);
-    dc_app_draw_scope_end(ctx, scope);
+    dc_app_draw_context_finish_planet_views(ctx, first_planet_view);
 }
 
 //~ text

@@ -1,6 +1,8 @@
 #define _USE_MATH_DEFINES
 #define PL_MATH_INCLUDE_FUNCTIONS
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "draw.h"
@@ -101,7 +103,6 @@ struct DcAppDrawContext {
     _DcAppDrawMouseTarget active_target;
 
     DcAppDrawArea *sb_container_stack;
-    DcAppDrawScope *sb_scope_stack;
 
     _DcAppStencilRecorder stencil;
 
@@ -161,6 +162,7 @@ static dcDrawCommandState _command_state(DcAppDrawContext *ctx);
 static bool _placement_is_default(DcAppPlacement placement);
 static DcAppDrawArea *_draw_result_area(DcAppDrawResult *result);
 static void _draw_context_update_mouse(DcAppDrawContext *ctx);
+static void _draw_context_require_frame_balanced(DcAppDrawContext *ctx);
 static void _draw_area_from_rect_points(float width, float height, plVec2 p0, plVec2 p1, plVec2 p3, DcAppDrawArea *out_area);
 static void _resolve_rect_points(DcAppDrawContext *ctx, DcAppVec2 dimensions, DcAppVec2 position, DcAppPlacement placement, plVec2 out[4], DcAppDrawArea *out_area);
 static plVec2 *_alloc_resolved_points(DcAppDrawContext *ctx, const DcAppVec2 *points, uint32_t point_count, DcAppVec2 position, DcAppPlacement placement, DcAppDrawArea *out_area);
@@ -178,7 +180,6 @@ static dcDrawTextOptions _text_options(DcAppDrawContext *ctx, DcAppTextStyle sty
 static plMat3 _text_transform(DcAppDrawContext *ctx, DcAppVec2 dimensions, DcAppVec2 position, DcAppPlacement placement);
 static void _clear_stencil_bit(DcAppDrawContext *ctx);
 static void _apply_planet_view_options(DcAppDrawPlanetViewHandle draw_view);
-static void _flush_planet_views(DcAppDrawContext *ctx, int first_view);
 static _DcAppPlanetContainerFrame *_planet_container_frame(DcAppDrawContext *ctx);
 static plVec3 *_planet_container_transform_points(DcAppDrawContext *ctx, const DcAppVec2 *points, uint32_t point_count);
 static plCamera _planet_camera_base(float fov_degrees, bool orthographic, DcAppVec2 size);
@@ -202,6 +203,13 @@ static void _draw_planet_polygon_geodetic_enabled(
 static _DcAppResolvedGeojsonStyle _planet_geojson_style(const DcGeojsonFeature *feature, DcAppPlanetGeojsonStyle fallback);
 static plVec3 *_planet_geojson_points(DcAppPlanetHandle planet, const DcGeojsonCoordArray *coordinates, double height_above_terrain);
 static void _planet_draw_geojson_feature(DcAppDrawPlanetViewHandle draw_view, const DcGeojsonFeature *feature, _DcAppResolvedGeojsonStyle style);
+
+#define DC_DRAW_FATAL(fmt, ...)                             \
+    do {                                                    \
+        DC_LOG_ERROR("Draw", "FATAL: " fmt, ##__VA_ARGS__); \
+        fflush(stderr);                                     \
+        abort();                                            \
+    } while (0)
 
 //~ api tables
 
@@ -359,7 +367,6 @@ void dc_app_draw_context_destroy(DcAppDrawContext *ctx) {
     sbfree(ctx->stencil.sb_frames);
     sbfree(ctx->sb_planet_views);
     sbfree(ctx->sb_planet_container_stack);
-    sbfree(ctx->sb_scope_stack);
     sbfree(ctx->sb_container_stack);
     PL_FREE(ctx);
 }
@@ -385,7 +392,6 @@ void dc_app_draw_context_begin(DcAppDrawContext *ctx, DcAppDrawFrameInput input)
     sbclear(ctx->stencil.sb_frames);
     sbclear(ctx->sb_planet_views);
     sbclear(ctx->sb_planet_container_stack);
-    sbclear(ctx->sb_scope_stack);
     sbclear(ctx->sb_container_stack);
 
     // rewind reusable draw list pools
@@ -405,17 +411,7 @@ void dc_app_draw_context_begin(DcAppDrawContext *ctx, DcAppDrawFrameInput input)
 
 void dc_app_draw_context_end(DcAppDrawContext *ctx) {
     if (!ctx) return;
-
-    // close scopes before restoring root state
-    while (sbcount(ctx->sb_scope_stack) > 0) {
-        DcAppDrawScope scope = ctx->sb_scope_stack[sbcount(ctx->sb_scope_stack) - 1];
-        dc_app_draw_scope_end(ctx, scope);
-    }
-
-    DcAppDrawScope root = {0};
-    plMat4 identity = pl_identity_mat4();
-    memcpy(root.area.transform, identity.d, sizeof(root.area.transform));
-    dc_app_draw_scope_end(ctx, root);
+    _draw_context_require_frame_balanced(ctx);
 }
 
 void dc_app_draw_context_submit(DcAppDrawContext *ctx, plRenderEncoder *encoder) {
@@ -499,56 +495,37 @@ void dc_app_draw_context_push(DcAppDrawContext *ctx, plVec2 position, plVec2 dim
 }
 
 void dc_app_draw_context_pop(DcAppDrawContext *ctx) {
-    if (!ctx || sbcount(ctx->sb_container_stack) == 0) return;
-    if (sbcount(ctx->sb_scope_stack) > 0) {
-        DcAppDrawScope *scope = &ctx->sb_scope_stack[sbcount(ctx->sb_scope_stack) - 1];
-        if (sbcount(ctx->sb_container_stack) <= scope->container_count) return;
+    if (!ctx) return;
+    if (sbcount(ctx->sb_container_stack) == 0) {
+        DC_DRAW_FATAL("container stack underflow: pop requires a successful matching push");
     }
 
     ctx->area = sbpop(ctx->sb_container_stack);
     _draw_context_update_mouse(ctx);
 }
 
-// a scope snapshots mutable stacks so nested callbacks cannot leak state
-DcAppDrawScope dc_app_draw_scope_begin(DcAppDrawContext *ctx) {
-    if (!ctx) return (DcAppDrawScope){0};
-
-    DcAppDrawScope scope = {
-        .area = ctx->area,
-        .container_count = sbcount(ctx->sb_container_stack),
-        .stencil_count = sbcount(ctx->stencil.sb_frames),
-        .planet_view_count = sbcount(ctx->sb_planet_views),
-        .planet_container_count = sbcount(ctx->sb_planet_container_stack),
-    };
-    sbpush(ctx->sb_scope_stack, scope);
-    return scope;
+int dc_app_draw_context_planet_view_count(DcAppDrawContext *ctx) {
+    return ctx ? sbcount(ctx->sb_planet_views) : 0;
 }
 
-void dc_app_draw_scope_end(DcAppDrawContext *ctx, DcAppDrawScope scope) {
-    if (!ctx) return;
-
-    if (sbcount(ctx->sb_scope_stack) > 0) {
-        scope = ctx->sb_scope_stack[sbcount(ctx->sb_scope_stack) - 1];
+static void _draw_context_require_frame_balanced(DcAppDrawContext *ctx) {
+    int container_count = sbcount(ctx->sb_container_stack);
+    int stencil_count = sbcount(ctx->stencil.sb_frames);
+    int planet_view_count = sbcount(ctx->sb_planet_views);
+    int planet_container_count = sbcount(ctx->sb_planet_container_stack);
+    if (container_count != 0 ||
+        stencil_count != 0 ||
+        planet_view_count != 0 ||
+        planet_container_count != 0 ||
+        ctx->stencil.phase != _DC_APP_STENCIL_PHASE_NONE) {
+        DC_DRAW_FATAL(
+            "frame ended with unbalanced draw state: containers=%d, stencils=%d, planet views=%d, planet containers=%d, stencil phase=%d",
+            container_count,
+            stencil_count,
+            planet_view_count,
+            planet_container_count,
+            (int)ctx->stencil.phase);
     }
-
-    // flush queued planet views after their overlays are submitted
-    _flush_planet_views(ctx, scope.planet_view_count);
-
-    while (sbcount(ctx->stencil.sb_frames) > scope.stencil_count) {
-        dc_app_draw_stencil_end(ctx);
-    }
-    while (sbcount(ctx->sb_planet_container_stack) > scope.planet_container_count) {
-        sbpop(ctx->sb_planet_container_stack);
-    }
-    while (sbcount(ctx->sb_container_stack) > scope.container_count) {
-        sbpop(ctx->sb_container_stack);
-    }
-    if (sbcount(ctx->sb_scope_stack) > 0) {
-        sbpop(ctx->sb_scope_stack);
-    }
-
-    ctx->area = scope.area;
-    _draw_context_update_mouse(ctx);
 }
 
 //~ placement containers and stencils
@@ -816,10 +793,9 @@ void dc_app_draw_stencil_draw(DcAppDrawContext *ctx) {
 }
 
 void dc_app_draw_stencil_end(DcAppDrawContext *ctx) {
-    if (!ctx || sbcount(ctx->stencil.sb_frames) == 0) return;
-    if (sbcount(ctx->sb_scope_stack) > 0) {
-        DcAppDrawScope *scope = &ctx->sb_scope_stack[sbcount(ctx->sb_scope_stack) - 1];
-        if (sbcount(ctx->stencil.sb_frames) <= scope->stencil_count) return;
+    if (!ctx) return;
+    if (sbcount(ctx->stencil.sb_frames) == 0) {
+        DC_DRAW_FATAL("stencil stack underflow: stencil_end requires a successful matching stencil_begin");
     }
 
     _DcAppStencilFrame frame = ctx->stencil.sb_frames[sbcount(ctx->stencil.sb_frames) - 1];
@@ -1416,7 +1392,7 @@ DcAppDrawPlanetViewHandle dc_app_draw_planet_view_geodetic(DcAppDrawContext *ctx
     if (!ctx || !view || dc_app_planet_view_crs(view) != DC_APP_PLANET_CRS_GEODETIC) return NULL;
 
     DcAppPlanetHandle planet = dc_app_planet_view_planet(view);
-    // keep camera and placement alive for the current draw scope
+    // keep camera and placement alive until this queued view is finalized
     DcAppDrawPlanetViewHandle draw_view = (DcAppDrawPlanetViewHandle)PL_ALLOC(sizeof(*draw_view));
     memset(draw_view, 0, sizeof(*draw_view));
     draw_view->view = view;
@@ -1457,7 +1433,7 @@ DcAppDrawPlanetViewHandle dc_app_draw_planet_view_cartesian(DcAppDrawContext *ct
     if (!ctx || !view || dc_app_planet_view_crs(view) != DC_APP_PLANET_CRS_CARTESIAN) return NULL;
 
     DcAppPlanetHandle planet = dc_app_planet_view_planet(view);
-    // keep camera and placement alive for the current draw scope
+    // keep camera and placement alive until this queued view is finalized
     DcAppDrawPlanetViewHandle draw_view = (DcAppDrawPlanetViewHandle)PL_ALLOC(sizeof(*draw_view));
     memset(draw_view, 0, sizeof(*draw_view));
     draw_view->view = view;
@@ -1528,10 +1504,9 @@ bool dc_app_draw_planet_container_push_geodetic(DcAppDrawContext *ctx, DcAppDraw
 }
 
 void dc_app_draw_planet_container_pop(DcAppDrawContext *ctx) {
-    if (!ctx || sbcount(ctx->sb_planet_container_stack) == 0) return;
-    if (sbcount(ctx->sb_scope_stack) > 0) {
-        DcAppDrawScope *scope = &ctx->sb_scope_stack[sbcount(ctx->sb_scope_stack) - 1];
-        if (sbcount(ctx->sb_planet_container_stack) <= scope->planet_container_count) return;
+    if (!ctx) return;
+    if (sbcount(ctx->sb_planet_container_stack) == 0) {
+        DC_DRAW_FATAL("planet container stack underflow: pop requires a successful matching push");
     }
     sbpop(ctx->sb_planet_container_stack);
 }
@@ -2658,11 +2633,12 @@ static void _apply_planet_view_options(DcAppDrawPlanetViewHandle draw_view) {
     _ext_planet->set_view_runtime_options(view, options);
 }
 
-static void _flush_planet_views(DcAppDrawContext *ctx, int first_view) {
+void dc_app_draw_context_finish_planet_views(DcAppDrawContext *ctx, int first_view) {
     if (!ctx) return;
     int view_count = sbcount(ctx->sb_planet_views);
-    if (first_view < 0) first_view = 0;
-    if (first_view > view_count) first_view = view_count;
+    if (first_view < 0 || first_view > view_count) {
+        DC_DRAW_FATAL("invalid queued planet view boundary: first=%d, count=%d", first_view, view_count);
+    }
 
     for (int i = first_view; i < view_count; i++) {
         DcAppDrawPlanetViewHandle draw_view = ctx->sb_planet_views[i];

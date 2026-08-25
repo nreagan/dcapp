@@ -13,7 +13,7 @@
 //~ handles
 
 typedef struct DcAppDrawContext DcAppDrawContext;
-// this handle is borrowed and valid only within its current draw scope
+// this handle is borrowed and valid only for the remainder of the current draw callback
 typedef struct DcAppDrawPlanetView *DcAppDrawPlanetViewHandle;
 typedef struct DcAppStroke DcAppStroke;
 typedef struct DcAppTextStyle DcAppTextStyle;
@@ -138,6 +138,7 @@ struct DcAppDrawApi {
     void (*text_ex)(DcAppDrawContext *draw_ctx, DcAppVec2 position, const char *text, DcAppTextStyle style, DcAppPlacement placement, DcAppDrawResult *result);
 
     //- containers
+    // successful push/begin calls must be matched before the draw callback returns
     bool (*container_push)(DcAppDrawContext *draw_ctx, DcAppVec2 position, DcAppVec2 size, DcAppVec2 virtual_size);
     bool (*container_push_ex)(DcAppDrawContext *draw_ctx, DcAppVec2 position, DcAppVec2 size, DcAppVec2 virtual_size, DcAppPlacement placement, DcAppDrawResult *result);
     bool (*container_push_area)(DcAppDrawContext *draw_ctx, const DcAppDrawArea *area);
