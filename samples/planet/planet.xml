@@ -35,6 +35,11 @@
 
     <Variable Type="#_variable_integer_" InitialValue="0">UseOrtho</Variable>
 
+    <!-- Exercises runtime <If> ancestry inside PlanetView and PlanetContainer. -->
+    <Variable Type="#_variable_boolean_" InitialValue="true">PlanetIfEnabled</Variable>
+    <Variable Type="#_variable_double_" InitialValue="0">PlanetPointerX</Variable>
+    <Variable Type="#_variable_double_" InitialValue="0">PlanetPointerY</Variable>
+
     <Variable Type="#_variable_integer_" InitialValue="0">TextureRefresh</Variable>
     <Variable Type="#_variable_double_" InitialValue="2000">TexMpp</Variable>
     <Variable Type="#_variable_integer_" InitialValue="1">HazardMap0Enabled</Variable>
@@ -149,6 +154,17 @@
                 </ButtonIndicatorOff>
             </Button>
 
+            <Button Style="HeaderToggle" X="730" Variable="PlanetIfEnabled">
+                <ButtonIndicatorOn>
+                    <Rectangle Style="HeaderToggleOn"/>
+                    <Text Style="ToggleLabel">If Group On</Text>
+                </ButtonIndicatorOn>
+                <ButtonIndicatorOff>
+                    <Rectangle Style="ToggleOff"/>
+                    <Text Style="ToggleOff">If Group Off</Text>
+                </ButtonIndicatorOff>
+            </Button>
+
             <Text X="290" Y="806" LocalAlignX="#_align_right_" LocalAlignY="#_align_middle_"
                 Size="13">Shaders:</Text>
 
@@ -241,22 +257,31 @@
                 <PlanetBreadcrumbs CRS="#_planet_crs_geodetic_" Latitude="@OrbitLat" Longitude="@OrbitLon"
                     HeightAboveTerrain="50000" PointSpacing="25000" MaxPoints="512"
                     LineColor="0.1 0.9 1.0 0.85" LineWidth="3.5" LinePattern="0xF0"/>
-                <PlanetSphere CRS="#_planet_crs_geodetic_" Latitude="@OrbitLat" Longitude="@OrbitLon"
-                    HeightAboveTerrain="50000" Radius="18000" FillColor="0.1 0.9 1.0 1.0"/>
-                <!-- The small XY shape is scaled, rotated, and moved as one unit. -->
-                <PlanetContainer Latitude="@OrbitLat" Longitude="@OrbitLon"
-                    HeightAboveTerrain="60000" Rotation="@LocalRotation" Scale="2000">
-                    <PlanetPolygon LineColor="0.1 0.9 1.0 1.0" LineWidth="2.1" LinePattern="0xAA"
-                        FillColor="0.1 0.65 1.0 0.22">
-                        <Vertex X="-40" Y="-30"/>
-                        <Vertex X="40" Y="-30"/>
-                        <Vertex X="40" Y="10"/>
-                        <Vertex X="0" Y="50"/>
-                        <Vertex X="-40" Y="10"/>
-                    </PlanetPolygon>
-                    <PlanetText X="0" Y="0" Size="12"
-                        FillColor="0.1 0.9 1.0 1.0">LOCAL</PlanetText>
-                </PlanetContainer>
+                <If Value="@PlanetIfEnabled">
+                    <If Value="@PlanetIfEnabled">
+                        <PlanetSphere CRS="#_planet_crs_geodetic_" Latitude="@OrbitLat" Longitude="@OrbitLon"
+                            HeightAboveTerrain="50000" Radius="18000" FillColor="0.1 0.9 1.0 1.0"/>
+                        <MouseMotion VariableX="PlanetPointerX" VariableY="PlanetPointerY"/>
+                    </If>
+                    <!-- The small XY shape is scaled, rotated, and moved as one unit. -->
+                    <PlanetContainer Latitude="@OrbitLat" Longitude="@OrbitLon"
+                        HeightAboveTerrain="60000" Rotation="@LocalRotation" Scale="2000">
+                        <If Value="@PlanetIfEnabled">
+                            <PlanetPolygon LineColor="0.1 0.9 1.0 1.0" LineWidth="2.1" LinePattern="0xAA"
+                                FillColor="0.1 0.65 1.0 0.22">
+                                <Vertex X="-40" Y="-30"/>
+                                <Vertex X="40" Y="-30"/>
+                                <Vertex X="40" Y="10"/>
+                                <Vertex X="0" Y="50"/>
+                                <Vertex X="-40" Y="10"/>
+                            </PlanetPolygon>
+                            <If Value="@PlanetIfEnabled">
+                                <PlanetText X="0" Y="0" Size="12"
+                                    FillColor="0.1 0.9 1.0 1.0">LOCAL</PlanetText>
+                            </If>
+                        </If>
+                    </PlanetContainer>
+                </If>
                 <PlanetGeoJSON File="assets/geojson_test.geojson" HeightAboveTerrain="1500"
                     LineColor="0.25 0.70 1.0 0.90" LineWidth="2.2" FillColor="0.25 0.70 1.0 0.10"/>
                 <PlanetEllipse Latitude="-55.0" Longitude="335.0" HeightAboveTerrain="1500"

@@ -351,8 +351,8 @@ the default is perspective.
 ### `<PlanetContainer>`
 
 Establishes a movable geodetic frame for lines, polygons, and text authored
-once in local 2D meters. It must be a direct child of `<PlanetView>` and may
-contain `<PlanetLine>`, `<PlanetPolygon>`, and `<PlanetText>` children.
+once in local 2D meters. It belongs to a `<PlanetView>` and may contain
+`<PlanetLine>`, `<PlanetPolygon>`, and `<PlanetText>` children.
 
 ```xml
 <PlanetContainer Latitude="@LandingLat" Longitude="@LandingLon"
@@ -389,9 +389,9 @@ Container nesting is not supported. The container height applies to every
 child; child `CRS` and `HeightAboveTerrain` attributes and local `Latitude`,
 `Longitude`, `Altitude`, and `Z` attributes are invalid.
 
-For line and polygon drawing, the C equivalent is a draw-context scope. A
-successful push establishes the frame used by subsequent local calls; pop
-restores the previous frame:
+For line and polygon drawing, the C equivalent is a balanced draw-context
+push/pop pair. A successful push establishes the frame used by subsequent
+local calls; pop restores the previous frame:
 
 ```c
 typedef struct _DcPlanetLocalTransform {
@@ -634,11 +634,10 @@ Displays text at a geographic location on the terrain surface.
 
 Text content uses the same variable interpolation syntax as `Text`.
 
-As a direct child of `<PlanetContainer>`, `X` and `Y` are required local
-east/north coordinates. The container supplies the geographic frame and
-height, and its scale applies to both the position and `Size`. `CRS`,
-`Latitude`, `Longitude`, `Z`, and `HeightAboveTerrain` are invalid in this
-local form.
+When owned by a `<PlanetContainer>`, `X` and `Y` are required local east/north
+coordinates. The container supplies the geographic frame and height, and its
+scale applies to both the position and `Size`. `CRS`, `Latitude`, `Longitude`,
+`Z`, and `HeightAboveTerrain` are invalid in this local form.
 
 ### `<PlanetPolygon>`
 
@@ -676,9 +675,10 @@ each polygon.
 
 ### `<Vertex>`
 
-Defines a point inside `<PlanetLine>` or `<PlanetPolygon>`. The containing line
-or polygon determines the CRS unless the primitive explicitly overrides it.
-Inside `<PlanetContainer>`, use `X` and `Y` for local east/north meters instead.
+Defines a point for `<PlanetLine>` or `<PlanetPolygon>` and must be a direct
+child. The containing line or polygon determines the CRS unless the primitive
+explicitly overrides it. Inside `<PlanetContainer>`, use `X` and `Y` for local
+east/north meters instead.
 
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|

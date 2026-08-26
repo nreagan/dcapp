@@ -508,6 +508,15 @@ int dc_app_draw_context_planet_view_count(DcAppDrawContext *ctx) {
     return ctx ? sbcount(ctx->sb_planet_views) : 0;
 }
 
+DcAppDrawPlanetViewHandle dc_app_draw_context_planet_view_peek(DcAppDrawContext *ctx) {
+    int view_count = dc_app_draw_context_planet_view_count(ctx);
+    return view_count > 0 ? ctx->sb_planet_views[view_count - 1] : NULL;
+}
+
+bool dc_app_draw_context_planet_container_active(DcAppDrawContext *ctx) {
+    return ctx && sbcount(ctx->sb_planet_container_stack) > 0;
+}
+
 static void _draw_context_require_frame_balanced(DcAppDrawContext *ctx) {
     int container_count = sbcount(ctx->sb_container_stack);
     int stencil_count = sbcount(ctx->stencil.sb_frames);

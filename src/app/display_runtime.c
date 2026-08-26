@@ -560,6 +560,68 @@ static void _render_node(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *rend
             _render_stencil(ctx, renderer, node_index, node);
             break;
 
+        case NODE_TYPE_PLANET_BREADCRUMBS: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (draw_view) _render_planet_breadcrumbs(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_CONTAINER: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (draw_view) _render_planet_container(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_ELLIPSE: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (draw_view) _render_planet_ellipse(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_IMAGE: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (draw_view) _render_planet_image(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_LINE: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (!draw_view) break;
+            if (dc_app_draw_context_planet_container_active(ctx))
+                _render_planet_line_local(ctx, renderer, node);
+            else
+                _render_planet_line(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_POLYGON: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (!draw_view) break;
+            if (dc_app_draw_context_planet_container_active(ctx))
+                _render_planet_polygon_local(ctx, renderer, node);
+            else
+                _render_planet_polygon(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_SPHERE: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (draw_view) _render_planet_sphere(ctx, renderer, node, draw_view);
+            break;
+        }
+
+        case NODE_TYPE_PLANET_TEXT: {
+            DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
+            if (draw_view)
+                _render_planet_text(
+                    ctx,
+                    renderer,
+                    node,
+                    draw_view,
+                    dc_app_draw_context_planet_container_active(ctx));
+            break;
+        }
+
         case NODE_TYPE_PLANET_VIEW:
             _render_planet_view(ctx, renderer, node_index, node);
             break;
@@ -2230,15 +2292,19 @@ static void _render_container(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext 
 }
 
 static void _render_conditional(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node) {
-
+    (void)node_index;
+    node->conditional.state_flags = NODE_STATE_FLAG_NONE;
     DcAppValue *val1 = dc_app_variable_registry_get_value(renderer->lookup, node->conditional.value1);
     if (!val1) {
         // optional warning remains suppressed for undefined condition values
         return;
     }
-    DcAppConditionalType type = (node->conditional.type == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED)
-                                    ? DC_APP_CONDITIONAL_TYPE_TRUE
-                                    : (DcAppConditionalType)dc_app_variable_registry_get_value(renderer->lookup, node->conditional.type)->value_integer;
+    DcAppConditionalType type = DC_APP_CONDITIONAL_TYPE_TRUE;
+    if (node->conditional.type != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
+        DcAppValue *type_value = dc_app_variable_registry_get_value(renderer->lookup, node->conditional.type);
+        if (!type_value) return;
+        type = (DcAppConditionalType)type_value->value_integer;
+    }
     bool use_val2 = node->conditional.value2 != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED;
 
     //- evaluate condition
@@ -2785,31 +2851,32 @@ static void _render_line(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *rend
     transform = pl_mul_mat4t(parent_transform, &transform);
 
     //- resolve geometry bounds
-    plVec2 min_pos = (plVec2){FLT_MAX, FLT_MAX};
-    plVec2 max_pos = (plVec2){FLT_MIN, FLT_MIN};
     int num_points = sbcount(node->line.sb_vertices);
-    plVec2 raw_points[DC_APP_NODE_LINE_MAX_POINTS];
+    if (num_points < 2) return;
+    if (num_points > DC_APP_NODE_LINE_MAX_POINTS) {
+        DC_LOG_ERROR("Line", "Maximum number of points exceeded");
+        num_points = DC_APP_NODE_LINE_MAX_POINTS;
+    }
+
+    plVec2 min_pos = (plVec2){FLT_MAX, FLT_MAX};
+    plVec2 max_pos = (plVec2){-FLT_MAX, -FLT_MAX};
     DcAppVec2 points[DC_APP_NODE_LINE_MAX_POINTS];
     for (int ii = 0; ii < num_points; ii++) {
+        DcAppVertexData *vertex = &node->line.sb_vertices[ii];
+        float point_x = (float)dc_app_variable_registry_get_value(renderer->lookup, vertex->position.x)->value_double;
+        float point_y = (float)dc_app_variable_registry_get_value(renderer->lookup, vertex->position.y)->value_double;
 
-        // get raw point position
-        float point_x = (float)dc_app_variable_registry_get_value(renderer->lookup, node->line.sb_vertices[ii].position.x)->value_double;
-        float point_y = (float)dc_app_variable_registry_get_value(renderer->lookup, node->line.sb_vertices[ii].position.y)->value_double;
-
-        // apply vertex negate
-        if (node->line.sb_vertices[ii].negate_x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED && dc_app_variable_registry_get_value(renderer->lookup, node->line.sb_vertices[ii].negate_x)->value_boolean) {
+        if (vertex->negate_x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED &&
+            dc_app_variable_registry_get_value(renderer->lookup, vertex->negate_x)->value_boolean) {
             point_x = -point_x;
         }
-        if (node->line.sb_vertices[ii].negate_y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED && dc_app_variable_registry_get_value(renderer->lookup, node->line.sb_vertices[ii].negate_y)->value_boolean) {
+        if (vertex->negate_y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED &&
+            dc_app_variable_registry_get_value(renderer->lookup, vertex->negate_y)->value_boolean) {
             point_y = -point_y;
         }
 
-        // apply vertex parent_align offset
-        if (node->line.sb_vertices[ii].parent_align.x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
-            int parent_align_x = dc_app_variable_registry_get_value(renderer->lookup, node->line.sb_vertices[ii].parent_align.x)->value_integer;
-            switch (parent_align_x) {
-                case DC_APP_DRAW_ALIGNMENT_TYPE_LEFT:
-                    break;
+        if (vertex->parent_align.x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
+            switch ((DcAppDrawAlignmentType)dc_app_variable_registry_get_value(renderer->lookup, vertex->parent_align.x)->value_integer) {
                 case DC_APP_DRAW_ALIGNMENT_TYPE_CENTER:
                     point_x += parent_dimensions->x / 2;
                     break;
@@ -2820,11 +2887,8 @@ static void _render_line(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *rend
                     break;
             }
         }
-        if (node->line.sb_vertices[ii].parent_align.y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
-            int parent_align_y = dc_app_variable_registry_get_value(renderer->lookup, node->line.sb_vertices[ii].parent_align.y)->value_integer;
-            switch (parent_align_y) {
-                case DC_APP_DRAW_ALIGNMENT_TYPE_BOTTOM:
-                    break;
+        if (vertex->parent_align.y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
+            switch ((DcAppDrawAlignmentType)dc_app_variable_registry_get_value(renderer->lookup, vertex->parent_align.y)->value_integer) {
                 case DC_APP_DRAW_ALIGNMENT_TYPE_MIDDLE:
                     point_y += parent_dimensions->y / 2;
                     break;
@@ -2836,15 +2900,11 @@ static void _render_line(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *rend
             }
         }
 
-        raw_points[ii] = (plVec2){point_x, point_y};
-
-        // update max/min
-        min_pos.x = fminf(min_pos.x, raw_points[ii].x);
-        min_pos.y = fminf(min_pos.y, raw_points[ii].y);
-        max_pos.x = fmaxf(max_pos.x, raw_points[ii].x);
-        max_pos.y = fmaxf(max_pos.y, raw_points[ii].y);
-
-        points[ii] = (DcAppVec2){raw_points[ii].x, raw_points[ii].y};
+        points[ii] = (DcAppVec2){point_x, point_y};
+        min_pos.x = fminf(min_pos.x, point_x);
+        min_pos.y = fminf(min_pos.y, point_y);
+        max_pos.x = fmaxf(max_pos.x, point_x);
+        max_pos.y = fmaxf(max_pos.y, point_y);
     }
 
     //- render outline
@@ -3438,31 +3498,32 @@ static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *r
     transform = pl_mul_mat4t(parent_transform, &transform);
 
     //- resolve geometry bounds
-    plVec2 min_pos = (plVec2){FLT_MAX, FLT_MAX};
-    plVec2 max_pos = (plVec2){FLT_MIN, FLT_MIN};
     int num_points = sbcount(node->polygon.sb_vertices);
-    plVec2 raw_points[DC_APP_NODE_POLYGON_MAX_POINTS];
+    if (num_points > DC_APP_NODE_POLYGON_MAX_POINTS) {
+        DC_LOG_ERROR("Polygon", "Maximum number of points exceeded");
+        num_points = DC_APP_NODE_POLYGON_MAX_POINTS;
+    }
+    bool geometry_valid = num_points >= 3;
+
+    plVec2 min_pos = geometry_valid ? (plVec2){FLT_MAX, FLT_MAX} : (plVec2){0.0f, 0.0f};
+    plVec2 max_pos = geometry_valid ? (plVec2){-FLT_MAX, -FLT_MAX} : (plVec2){0.0f, 0.0f};
     DcAppVec2 points[DC_APP_NODE_POLYGON_MAX_POINTS];
     for (int ii = 0; ii < num_points; ii++) {
+        DcAppVertexData *vertex = &node->polygon.sb_vertices[ii];
+        float point_x = (float)dc_app_variable_registry_get_value(renderer->lookup, vertex->position.x)->value_double;
+        float point_y = (float)dc_app_variable_registry_get_value(renderer->lookup, vertex->position.y)->value_double;
 
-        // get raw point position
-        float point_x = (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.sb_vertices[ii].position.x)->value_double;
-        float point_y = (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.sb_vertices[ii].position.y)->value_double;
-
-        // apply vertex negate
-        if (node->polygon.sb_vertices[ii].negate_x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED && dc_app_variable_registry_get_value(renderer->lookup, node->polygon.sb_vertices[ii].negate_x)->value_boolean) {
+        if (vertex->negate_x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED &&
+            dc_app_variable_registry_get_value(renderer->lookup, vertex->negate_x)->value_boolean) {
             point_x = -point_x;
         }
-        if (node->polygon.sb_vertices[ii].negate_y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED && dc_app_variable_registry_get_value(renderer->lookup, node->polygon.sb_vertices[ii].negate_y)->value_boolean) {
+        if (vertex->negate_y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED &&
+            dc_app_variable_registry_get_value(renderer->lookup, vertex->negate_y)->value_boolean) {
             point_y = -point_y;
         }
 
-        // apply vertex parent_align offset
-        if (node->polygon.sb_vertices[ii].parent_align.x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
-            int parent_align_x = dc_app_variable_registry_get_value(renderer->lookup, node->polygon.sb_vertices[ii].parent_align.x)->value_integer;
-            switch (parent_align_x) {
-                case DC_APP_DRAW_ALIGNMENT_TYPE_LEFT:
-                    break;
+        if (vertex->parent_align.x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
+            switch ((DcAppDrawAlignmentType)dc_app_variable_registry_get_value(renderer->lookup, vertex->parent_align.x)->value_integer) {
                 case DC_APP_DRAW_ALIGNMENT_TYPE_CENTER:
                     point_x += parent_dimensions->x / 2;
                     break;
@@ -3473,11 +3534,8 @@ static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *r
                     break;
             }
         }
-        if (node->polygon.sb_vertices[ii].parent_align.y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
-            int parent_align_y = dc_app_variable_registry_get_value(renderer->lookup, node->polygon.sb_vertices[ii].parent_align.y)->value_integer;
-            switch (parent_align_y) {
-                case DC_APP_DRAW_ALIGNMENT_TYPE_BOTTOM:
-                    break;
+        if (vertex->parent_align.y != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
+            switch ((DcAppDrawAlignmentType)dc_app_variable_registry_get_value(renderer->lookup, vertex->parent_align.y)->value_integer) {
                 case DC_APP_DRAW_ALIGNMENT_TYPE_MIDDLE:
                     point_y += parent_dimensions->y / 2;
                     break;
@@ -3489,21 +3547,19 @@ static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *r
             }
         }
 
-        raw_points[ii] = (plVec2){point_x, point_y};
-
-        // update max/min
-        min_pos.x = fminf(min_pos.x, raw_points[ii].x);
-        min_pos.y = fminf(min_pos.y, raw_points[ii].y);
-        max_pos.x = fmaxf(max_pos.x, raw_points[ii].x);
-        max_pos.y = fmaxf(max_pos.y, raw_points[ii].y);
-
-        points[ii] = (DcAppVec2){raw_points[ii].x, raw_points[ii].y};
+        points[ii] = (DcAppVec2){point_x, point_y};
+        if (geometry_valid) {
+            min_pos.x = fminf(min_pos.x, point_x);
+            min_pos.y = fminf(min_pos.y, point_y);
+            max_pos.x = fmaxf(max_pos.x, point_x);
+            max_pos.y = fmaxf(max_pos.y, point_y);
+        }
     }
 
     //- resolve rounded geometry
     bool is_rounded = node->polygon.rounded != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED &&
                       dc_app_variable_registry_get_value(renderer->lookup, node->polygon.rounded)->value_boolean;
-    float corner_radius = is_rounded ? fminf(max_pos.x - min_pos.x, max_pos.y - min_pos.y) * 0.1f : 0.0f;
+    float corner_radius = geometry_valid && is_rounded ? fminf(max_pos.x - min_pos.x, max_pos.y - min_pos.y) * 0.1f : 0.0f;
 
     float fill_color[4] = {
         node->polygon.fill_color.r == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 0.0f : (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.fill_color.r)->value_double,
@@ -3517,32 +3573,34 @@ static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *r
         node->polygon.line_color.b == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 0.0f : (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.line_color.b)->value_double,
         node->polygon.line_color.a == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 1.0f : (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.line_color.a)->value_double,
     };
-    dc_app_draw_context_push(ctx, min_pos, (plVec2){max_pos.x - min_pos.x, max_pos.y - min_pos.y}, &transform);
-    if (node->polygon.config_flags & NODE_CONFIG_FLAG_FILL_ENABLED) {
-        dc_app_draw_rounded_convex_polygon_filled(ctx, points, (uint32_t)num_points, corner_radius, (DcAppVec4){
-                                                                                                        .r = fill_color[0],
-                                                                                                        .g = fill_color[1],
-                                                                                                        .b = fill_color[2],
-                                                                                                        .a = fill_color[3],
-                                                                                                    });
+    if (geometry_valid) {
+        dc_app_draw_context_push(ctx, min_pos, (plVec2){max_pos.x - min_pos.x, max_pos.y - min_pos.y}, &transform);
+        if (node->polygon.config_flags & NODE_CONFIG_FLAG_FILL_ENABLED) {
+            dc_app_draw_rounded_convex_polygon_filled(ctx, points, (uint32_t)num_points, corner_radius, (DcAppVec4){
+                                                                                                            .r = fill_color[0],
+                                                                                                            .g = fill_color[1],
+                                                                                                            .b = fill_color[2],
+                                                                                                            .a = fill_color[3],
+                                                                                                        });
+        }
+        if (node->polygon.config_flags & NODE_CONFIG_FLAG_LINE_ENABLED) {
+            DcAppStroke stroke = {
+                .color = {
+                    .r = line_color[0],
+                    .g = line_color[1],
+                    .b = line_color[2],
+                    .a = line_color[3],
+                },
+                .width = node->polygon.line_width == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 1.0f : (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.line_width)->value_double,
+                .pattern = node->polygon.line_pattern == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 0 : (uint8_t)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.line_pattern)->value_integer,
+            };
+            dc_app_draw_rounded_polygon(ctx, points, (uint32_t)num_points, corner_radius, stroke);
+        }
+        dc_app_draw_context_pop(ctx);
     }
-    if (node->polygon.config_flags & NODE_CONFIG_FLAG_LINE_ENABLED) {
-        DcAppStroke stroke = {
-            .color = {
-                .r = line_color[0],
-                .g = line_color[1],
-                .b = line_color[2],
-                .a = line_color[3],
-            },
-            .width = node->polygon.line_width == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 1.0f : (float)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.line_width)->value_double,
-            .pattern = node->polygon.line_pattern == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? 0 : (uint8_t)dc_app_variable_registry_get_value(renderer->lookup, node->polygon.line_pattern)->value_integer,
-        };
-        dc_app_draw_rounded_polygon(ctx, points, (uint32_t)num_points, corner_radius, stroke);
-    }
-    dc_app_draw_context_pop(ctx);
 
     //- resolve mouse events
-    if (node->polygon.config_flags & NODE_CONFIG_FLAG_HAS_MOUSE_HANDLERS) {
+    if (geometry_valid && (node->polygon.config_flags & NODE_CONFIG_FLAG_HAS_MOUSE_HANDLERS)) {
 
         // process mouse position
         plVec4 mouse_position = (plVec4){
@@ -3558,8 +3616,8 @@ static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *r
 
             // now do the actual check
             for (int ii = 0, jj = num_points - 1; ii < num_points; jj = ii++) {
-                double xi = raw_points[ii].x, yi = raw_points[ii].y;
-                double xj = raw_points[jj].x, yj = raw_points[jj].y;
+                double xi = points[ii].x, yi = points[ii].y;
+                double xj = points[jj].x, yj = points[jj].y;
 
                 bool intersect = ((yi > mouse_position.y) != (yj > mouse_position.y)) && (mouse_position.x < (xj - xi) * (mouse_position.y - yi) / (yj - yi + 1e-12) + xi);
                 if (intersect) {
@@ -3587,6 +3645,8 @@ static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *r
         if (dc_app_draw_mouse_target_hovered(ctx, (DcAppDrawTargetId)node_index)) {
             node->polygon.state_flags |= NODE_STATE_FLAG_HOVERED;
         }
+    } else if (!geometry_valid) {
+        node->polygon.state_flags = NODE_STATE_FLAG_NONE;
     }
 
     //- render children
@@ -4872,17 +4932,7 @@ static void _render_planet_container(DcAppDrawContext *ctx, DcAppDisplayRuntimeC
 
     if (!dc_app_draw_planet_container_push_geodetic(ctx, draw_view, lat, lon, height, transform)) return;
 
-    DcAppNodeIndex child_index = container->child;
-    while (child_index != NODE_INDEX_UNDEFINED) {
-        DcAppNode *child = dc_app_display_model_get_node(renderer->scene, child_index);
-        if (child->type == NODE_TYPE_PLANET_LINE)
-            _render_planet_line_local(ctx, renderer, child);
-        else if (child->type == NODE_TYPE_PLANET_POLYGON)
-            _render_planet_polygon_local(ctx, renderer, child);
-        else if (child->type == NODE_TYPE_PLANET_TEXT)
-            _render_planet_text(ctx, renderer, child, draw_view, true);
-        child_index = child->next;
-    }
+    _render_node_list(ctx, renderer, container->child);
 
     dc_app_draw_planet_container_pop(ctx);
 }
@@ -5732,7 +5782,7 @@ static void _render_planet_view(DcAppDrawContext *ctx, DcAppDisplayRuntimeContex
             (DcAppVec2){dimension[0], dimension[1]},
             (DcAppPlacement){0},
             NULL);
-        view_added = true;
+        view_added = draw_view != NULL;
     } else if (node->planet_view.crs == DC_APP_PLANET_CRS_CARTESIAN) {
         DcAppVec3d position = {
             node->planet_view.xyz.x != DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ? dc_app_variable_registry_get_value(renderer->lookup, node->planet_view.xyz.x)->value_double : 0.0,
@@ -5750,32 +5800,12 @@ static void _render_planet_view(DcAppDrawContext *ctx, DcAppDisplayRuntimeContex
             (DcAppVec2){dimension[0], dimension[1]},
             (DcAppPlacement){0},
             NULL);
-        view_added = true;
+        view_added = draw_view != NULL;
     }
 
     // submit xml overlays before rendering the queued planet view
     if (view_added) {
-        DcAppNodeIndex child_index = node->planet_view.child;
-        while (child_index != NODE_INDEX_UNDEFINED) {
-            DcAppNode *child = dc_app_display_model_get_node(renderer->scene, child_index);
-            if (child->type == NODE_TYPE_PLANET_BREADCRUMBS)
-                _render_planet_breadcrumbs(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_CONTAINER)
-                _render_planet_container(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_ELLIPSE)
-                _render_planet_ellipse(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_LINE)
-                _render_planet_line(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_POLYGON)
-                _render_planet_polygon(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_IMAGE)
-                _render_planet_image(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_SPHERE)
-                _render_planet_sphere(ctx, renderer, child, draw_view);
-            else if (child->type == NODE_TYPE_PLANET_TEXT)
-                _render_planet_text(ctx, renderer, child, draw_view, false);
-            child_index = child->next;
-        }
+        _render_node_list(ctx, renderer, node->planet_view.child);
     }
 
     dc_app_draw_context_pop(ctx);

@@ -63,6 +63,7 @@ static int _register_font(DcAppDisplayBuilderContext *xml_ctx, const char *path)
 static DcAppVariableRegistryVariableIndex _register_anonymous_variable(DcAppDisplayBuilderContext *xml_ctx, DcAppValueType type, const char *initial_value_str);
 static DcAppVariableRegistryVariableIndex _create_anonymous_variable(DcAppDisplayBuilderContext *xml_ctx, DcAppValueType type, const char *initial_value_str);
 static DcAppNodeIndex _create_state_event_node(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeType node_type, DcAppNodeIndex parent_node_index, DcAppNodeIndex child_index);
+static DcAppNodeIndex _find_state_owner(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType *owner_elem_type);
 static void _set_parent_has_mouse_handlers(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeIndex parent_node_index);
 static DcAppNodeIndex _process_xml_node_children(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex node_index, DcAppXmlElementType elem_type, const char *directory);
 static bool _load_color_from_string(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, const char *attr_name, DcAppNodeValueIndex4 *color_out);
@@ -143,6 +144,7 @@ static void _create_geojson_nodes(
 static const char *_node_type_to_string(DcAppNodeType type);
 static DcAppNodeIndex _register_node(DcAppDisplayBuilderContext *xml_ctx, DcAppNode *node);
 static DcAppNode *_get_node(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeIndex index);
+static DcAppNode *_find_semantic_planet_parent(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeIndex parent_node_index);
 
 //~ lifecycle
 
@@ -238,6 +240,12 @@ DcAppNodeIndex dc_app_display_builder_process_xml_node(DcAppDisplayBuilderContex
 
         case DC_APP_XML_ELEMENT_TYPE_BUTTON_INDICATOR_ON:
             return _process_xml_node_button_indicator_on(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
+
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_PRESSED:
+            return _process_xml_node_button_pressed(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
+
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_RELEASED:
+            return _process_xml_node_button_released(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
 
         case DC_APP_XML_ELEMENT_TYPE_BUTTON_TRANSITION:
             return _process_xml_node_button_transition(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
@@ -1254,6 +1262,61 @@ static DcAppNodeIndex _create_state_event_node(DcAppDisplayBuilderContext *xml_c
     return _register_node(xml_ctx, &dc_node);
 }
 
+// nested If nodes sit between a state block and the node whose state it reads
+static DcAppNodeIndex _find_state_owner(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType *owner_elem_type) {
+    xmlNodePtr owner_xml = xml_node ? xml_node->parent : NULL;
+    DcAppXmlElementType semantic_type = owner_xml
+                                            ? dc_app_xml_element_type_from_xml_node(owner_xml)
+                                            : DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    while (owner_xml &&
+           (semantic_type == DC_APP_XML_ELEMENT_TYPE_IF ||
+            semantic_type == DC_APP_XML_ELEMENT_TYPE_TRUE ||
+            semantic_type == DC_APP_XML_ELEMENT_TYPE_FALSE)) {
+        owner_xml = owner_xml->parent;
+        semantic_type = owner_xml
+                            ? dc_app_xml_element_type_from_xml_node(owner_xml)
+                            : DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    }
+    if (owner_elem_type) *owner_elem_type = semantic_type;
+
+    DcAppNodeIndex owner_index = parent_node_index;
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+    while (owner && owner->type == NODE_TYPE_CONDITIONAL) {
+        owner_index = owner->parent;
+        owner = _get_node(xml_ctx, owner_index);
+    }
+    if (!owner) return NODE_INDEX_UNDEFINED;
+
+    bool matches = false;
+    switch (semantic_type) {
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED:
+            matches = owner->type == NODE_TYPE_BUTTON;
+            break;
+        case DC_APP_XML_ELEMENT_TYPE_CONTAINER:
+            matches = owner->type == NODE_TYPE_CONTAINER;
+            break;
+        case DC_APP_XML_ELEMENT_TYPE_ELLIPSE:
+            matches = owner->type == NODE_TYPE_ELLIPSE;
+            break;
+        case DC_APP_XML_ELEMENT_TYPE_IMAGE:
+            matches = owner->type == NODE_TYPE_IMAGE;
+            break;
+        case DC_APP_XML_ELEMENT_TYPE_PIXELSTREAM:
+            matches = owner->type == NODE_TYPE_PIXELSTREAM;
+            break;
+        case DC_APP_XML_ELEMENT_TYPE_POLYGON:
+            matches = owner->type == NODE_TYPE_POLYGON;
+            break;
+        case DC_APP_XML_ELEMENT_TYPE_RECTANGLE:
+            matches = owner->type == NODE_TYPE_RECTANGLE;
+            break;
+        default:
+            break;
+    }
+    return matches ? owner_index : NODE_INDEX_UNDEFINED;
+}
+
 // flag containers that need mouse state during rendering
 static void _set_parent_has_mouse_handlers(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeIndex parent_node_index) {
     DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
@@ -1284,72 +1347,113 @@ static void _set_parent_has_mouse_handlers(DcAppDisplayBuilderContext *xml_ctx, 
 
 static DcAppNodeIndex _process_xml_node_button_disabled(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
     DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
 
-    switch (parent_elem_type) {
-        case DC_APP_XML_ELEMENT_TYPE_BUTTON: {
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_DISABLED, parent_node_index, first_child_index);
-        }
-        default:
-            DC_LOG_ERROR("Disabled", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+    if (!owner || owner->type != NODE_TYPE_BUTTON || owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON) {
+        DC_LOG_ERROR("Disabled", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
     }
-    return NODE_INDEX_UNDEFINED;
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_DISABLED, owner_index, first_child_index);
 }
 
 static DcAppNodeIndex _process_xml_node_button_enabled(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
     DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
 
-    switch (parent_elem_type) {
-        case DC_APP_XML_ELEMENT_TYPE_BUTTON: {
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_ENABLED, parent_node_index, first_child_index);
-        }
-        default:
-            DC_LOG_ERROR("Enabled", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+    if (!owner || owner->type != NODE_TYPE_BUTTON || owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON) {
+        DC_LOG_ERROR("Enabled", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
     }
-    return NODE_INDEX_UNDEFINED;
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_ENABLED, owner_index, first_child_index);
 }
 
 static DcAppNodeIndex _process_xml_node_button_indicator_off(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
     DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
 
-    switch (parent_elem_type) {
-        case DC_APP_XML_ELEMENT_TYPE_BUTTON: {
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_INDICATOR_OFF, parent_node_index, first_child_index);
-        }
-        default:
-            DC_LOG_ERROR("Off", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+    if (!owner || owner->type != NODE_TYPE_BUTTON ||
+        (owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON &&
+         owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED)) {
+        DC_LOG_ERROR("Off", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
     }
-    return NODE_INDEX_UNDEFINED;
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_INDICATOR_OFF, owner_index, first_child_index);
 }
 
 static DcAppNodeIndex _process_xml_node_button_indicator_on(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
     DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
 
-    switch (parent_elem_type) {
-        case DC_APP_XML_ELEMENT_TYPE_BUTTON: {
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_INDICATOR_ON, parent_node_index, first_child_index);
-        }
-        default:
-            DC_LOG_ERROR("On", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+    if (!owner || owner->type != NODE_TYPE_BUTTON ||
+        (owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON &&
+         owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED)) {
+        DC_LOG_ERROR("On", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
     }
-    return NODE_INDEX_UNDEFINED;
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_INDICATOR_ON, owner_index, first_child_index);
+}
+
+static DcAppNodeIndex _process_xml_node_button_pressed(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+
+    if (!owner || owner->type != NODE_TYPE_BUTTON || owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON) {
+        DC_LOG_ERROR("Pressed", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_PRESSED, owner_index, first_child_index);
+}
+
+static DcAppNodeIndex _process_xml_node_button_released(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+
+    if (!owner || owner->type != NODE_TYPE_BUTTON || owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON) {
+        DC_LOG_ERROR("Released", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_RELEASED, owner_index, first_child_index);
 }
 
 static DcAppNodeIndex _process_xml_node_button_transition(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
     DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
 
-    switch (parent_elem_type) {
-        case DC_APP_XML_ELEMENT_TYPE_BUTTON: {
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_TRANSITION, parent_node_index, first_child_index);
-        }
-        default:
-            DC_LOG_ERROR("Transition", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+    if (!owner || owner->type != NODE_TYPE_BUTTON ||
+        (owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON &&
+         owner_elem_type != DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED)) {
+        DC_LOG_ERROR("Transition", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
+        return NODE_INDEX_UNDEFINED;
     }
-    return NODE_INDEX_UNDEFINED;
+
+    DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, elem_type, directory);
+    return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_BUTTON_TRANSITION, owner_index, first_child_index);
 }
 
 static DcAppNodeIndex _process_xml_node_constant(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
@@ -2237,8 +2341,11 @@ static DcAppNodeIndex _process_xml_node_logic(DcAppDisplayBuilderContext *xml_ct
 //- mouse events
 
 static DcAppNodeIndex _process_xml_node_mouse_active(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
-    switch (parent_node->type) {
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+    if (owner_elem_type == DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED) owner = NULL;
+    switch (owner ? owner->type : NODE_TYPE_UNDEFINED) {
         case NODE_TYPE_BUTTON:
         case NODE_TYPE_CONTAINER:
         case NODE_TYPE_ELLIPSE:
@@ -2246,20 +2353,23 @@ static DcAppNodeIndex _process_xml_node_mouse_active(DcAppDisplayBuilderContext 
         case NODE_TYPE_PIXELSTREAM:
         case NODE_TYPE_POLYGON:
         case NODE_TYPE_RECTANGLE: {
-            _set_parent_has_mouse_handlers(xml_ctx, parent_node_index);
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_ACTIVE, parent_node_index, first_child_index);
+            _set_parent_has_mouse_handlers(xml_ctx, owner_index);
+            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, DC_APP_XML_ELEMENT_TYPE_MOUSE_ACTIVE, directory);
+            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_ACTIVE, owner_index, first_child_index);
         }
         default:
-            DC_LOG_ERROR("MouseActive", "Invalid parent of type %s", _node_type_to_string(parent_node->type));
+            DC_LOG_ERROR("MouseActive", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
             break;
     }
     return NODE_INDEX_UNDEFINED;
 }
 
 static DcAppNodeIndex _process_xml_node_mouse_hovered(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
-    switch (parent_node->type) {
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+    if (owner_elem_type == DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED) owner = NULL;
+    switch (owner ? owner->type : NODE_TYPE_UNDEFINED) {
         case NODE_TYPE_BUTTON:
         case NODE_TYPE_CONTAINER:
         case NODE_TYPE_ELLIPSE:
@@ -2267,20 +2377,23 @@ static DcAppNodeIndex _process_xml_node_mouse_hovered(DcAppDisplayBuilderContext
         case NODE_TYPE_PIXELSTREAM:
         case NODE_TYPE_POLYGON:
         case NODE_TYPE_RECTANGLE: {
-            _set_parent_has_mouse_handlers(xml_ctx, parent_node_index);
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_HOVERED, parent_node_index, first_child_index);
+            _set_parent_has_mouse_handlers(xml_ctx, owner_index);
+            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, DC_APP_XML_ELEMENT_TYPE_MOUSE_HOVERED, directory);
+            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_HOVERED, owner_index, first_child_index);
         }
         default:
-            DC_LOG_ERROR("MouseHovered", "Invalid parent of type %s", _node_type_to_string(parent_node->type));
+            DC_LOG_ERROR("MouseHovered", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
             break;
     }
     return NODE_INDEX_UNDEFINED;
 }
 
 static DcAppNodeIndex _process_xml_node_mouse_inactive(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
-    switch (parent_node->type) {
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+    if (owner_elem_type == DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED) owner = NULL;
+    switch (owner ? owner->type : NODE_TYPE_UNDEFINED) {
         case NODE_TYPE_BUTTON:
         case NODE_TYPE_CONTAINER:
         case NODE_TYPE_ELLIPSE:
@@ -2288,12 +2401,12 @@ static DcAppNodeIndex _process_xml_node_mouse_inactive(DcAppDisplayBuilderContex
         case NODE_TYPE_PIXELSTREAM:
         case NODE_TYPE_POLYGON:
         case NODE_TYPE_RECTANGLE: {
-            _set_parent_has_mouse_handlers(xml_ctx, parent_node_index);
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_INACTIVE, parent_node_index, first_child_index);
+            _set_parent_has_mouse_handlers(xml_ctx, owner_index);
+            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, DC_APP_XML_ELEMENT_TYPE_MOUSE_INACTIVE, directory);
+            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_INACTIVE, owner_index, first_child_index);
         }
         default:
-            DC_LOG_ERROR("MouseInactive", "Invalid parent of type %s", _node_type_to_string(parent_node->type));
+            DC_LOG_ERROR("MouseInactive", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
             break;
     }
     return NODE_INDEX_UNDEFINED;
@@ -2324,8 +2437,11 @@ static DcAppNodeIndex _process_xml_node_mouse_motion(DcAppDisplayBuilderContext 
 }
 
 static DcAppNodeIndex _process_xml_node_mouse_pressed(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
-    switch (parent_node->type) {
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+    if (owner_elem_type == DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED) owner = NULL;
+    switch (owner ? owner->type : NODE_TYPE_UNDEFINED) {
         case NODE_TYPE_BUTTON:
         case NODE_TYPE_CONTAINER:
         case NODE_TYPE_ELLIPSE:
@@ -2333,20 +2449,23 @@ static DcAppNodeIndex _process_xml_node_mouse_pressed(DcAppDisplayBuilderContext
         case NODE_TYPE_PIXELSTREAM:
         case NODE_TYPE_POLYGON:
         case NODE_TYPE_RECTANGLE: {
-            _set_parent_has_mouse_handlers(xml_ctx, parent_node_index);
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_PRESSED, parent_node_index, first_child_index);
+            _set_parent_has_mouse_handlers(xml_ctx, owner_index);
+            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, DC_APP_XML_ELEMENT_TYPE_MOUSE_PRESSED, directory);
+            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_PRESSED, owner_index, first_child_index);
         }
         default:
-            DC_LOG_ERROR("MousePressed", "Invalid parent of type %s", _node_type_to_string(parent_node->type));
+            DC_LOG_ERROR("MousePressed", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
             break;
     }
     return NODE_INDEX_UNDEFINED;
 }
 
 static DcAppNodeIndex _process_xml_node_mouse_released(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
-    switch (parent_node->type) {
+    DcAppXmlElementType owner_elem_type = DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+    DcAppNodeIndex owner_index = _find_state_owner(xml_ctx, xml_node, parent_node_index, &owner_elem_type);
+    DcAppNode *owner = _get_node(xml_ctx, owner_index);
+    if (owner_elem_type == DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED) owner = NULL;
+    switch (owner ? owner->type : NODE_TYPE_UNDEFINED) {
         case NODE_TYPE_BUTTON:
         case NODE_TYPE_CONTAINER:
         case NODE_TYPE_ELLIPSE:
@@ -2354,12 +2473,12 @@ static DcAppNodeIndex _process_xml_node_mouse_released(DcAppDisplayBuilderContex
         case NODE_TYPE_PIXELSTREAM:
         case NODE_TYPE_POLYGON:
         case NODE_TYPE_RECTANGLE: {
-            _set_parent_has_mouse_handlers(xml_ctx, parent_node_index);
-            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
-            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_RELEASED, parent_node_index, first_child_index);
+            _set_parent_has_mouse_handlers(xml_ctx, owner_index);
+            DcAppNodeIndex first_child_index = _process_xml_node_children(xml_ctx, xml_node, owner_index, DC_APP_XML_ELEMENT_TYPE_MOUSE_RELEASED, directory);
+            return _create_state_event_node(xml_ctx, NODE_TYPE_STATE_MOUSE_RELEASED, owner_index, first_child_index);
         }
         default:
-            DC_LOG_ERROR("MouseReleased", "Invalid parent of type %s", _node_type_to_string(parent_node->type));
+            DC_LOG_ERROR("MouseReleased", "Invalid parent of type %s", dc_app_xml_element_type_to_string(parent_elem_type));
             break;
     }
     return NODE_INDEX_UNDEFINED;
@@ -3379,9 +3498,11 @@ static DcAppNodeIndex _process_xml_node_planet_data(DcAppDisplayBuilderContext *
 //- overlays
 
 static DcAppNodeIndex _process_xml_node_planet_breadcrumbs(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
     (void)directory;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
         DC_LOG_ERROR("PlanetBreadcrumbs", "PlanetBreadcrumbs must be a child of PlanetView");
         return NODE_INDEX_UNDEFINED;
     }
@@ -3392,9 +3513,8 @@ static DcAppNodeIndex _process_xml_node_planet_breadcrumbs(DcAppDisplayBuilderCo
 
     //- inherit planet and coordinate state
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    dc_node.planet_breadcrumbs.planet_def_index = parent->planet_view.planet_def_index;
-    dc_node.planet_breadcrumbs.crs = parent->planet_view.crs;
+    dc_node.planet_breadcrumbs.planet_def_index = planet_parent->planet_view.planet_def_index;
+    dc_node.planet_breadcrumbs.crs = planet_parent->planet_view.crs;
 
     //- resolve sampled coordinates
 
@@ -3494,7 +3614,10 @@ static DcAppNodeIndex _process_xml_node_planet_breadcrumbs(DcAppDisplayBuilderCo
 }
 
 static DcAppNodeIndex _process_xml_node_planet_container(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+    (void)parent_elem_type;
+
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
         DC_LOG_ERROR("PlanetContainer", "PlanetContainer must be a child of PlanetView");
         return NODE_INDEX_UNDEFINED;
     }
@@ -3503,8 +3626,7 @@ static DcAppNodeIndex _process_xml_node_planet_container(DcAppDisplayBuilderCont
     dc_node.type = NODE_TYPE_PLANET_CONTAINER;
     dc_node.parent = parent_node_index;
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    dc_node.planet_container.planet_def_index = parent->planet_view.planet_def_index;
+    dc_node.planet_container.planet_def_index = planet_parent->planet_view.planet_def_index;
 
     //- resolve the geodetic anchor
 
@@ -3559,9 +3681,11 @@ static DcAppNodeIndex _process_xml_node_planet_container(DcAppDisplayBuilderCont
 }
 
 static DcAppNodeIndex _process_xml_node_planet_ellipse(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
     (void)directory;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
         DC_LOG_ERROR("PlanetEllipse", "PlanetEllipse must be a child of PlanetView");
         return NODE_INDEX_UNDEFINED;
     }
@@ -3571,9 +3695,8 @@ static DcAppNodeIndex _process_xml_node_planet_ellipse(DcAppDisplayBuilderContex
     dc_node.parent = parent_node_index;
 
     // inherit the definition from the parent planet view
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    dc_node.planet_ellipse.planet_def_index = parent->planet_view.planet_def_index;
-    dc_node.planet_ellipse.crs = parent->planet_view.crs;
+    dc_node.planet_ellipse.planet_def_index = planet_parent->planet_view.planet_def_index;
+    dc_node.planet_ellipse.crs = planet_parent->planet_view.crs;
 
     // coordinate reference system
     xmlChar *raw_crs = xmlGetProp(xml_node, BAD_CAST "CRS");
@@ -3874,8 +3997,10 @@ static void _create_geojson_nodes(
 }
 
 static DcAppNodeIndex _process_xml_node_planet_geo_json(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
         DC_LOG_ERROR("PlanetGeoJSON", "PlanetGeoJSON must be a child of PlanetView");
         return NODE_INDEX_UNDEFINED;
     }
@@ -3913,8 +4038,7 @@ static DcAppNodeIndex _process_xml_node_planet_geo_json(DcAppDisplayBuilderConte
     }
 
     // parse default attributes from xml
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    uint8_t planet_def_index = parent->planet_view.planet_def_index;
+    uint8_t planet_def_index = planet_parent->planet_view.planet_def_index;
 
     xmlChar *raw_crs = xmlGetProp(xml_node, BAD_CAST "CRS");
     if (raw_crs) {
@@ -4007,7 +4131,10 @@ static DcAppNodeIndex _process_xml_node_planet_geo_json(DcAppDisplayBuilderConte
 }
 
 static DcAppNodeIndex _process_xml_node_planet_image(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+    (void)parent_elem_type;
+
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
         DC_LOG_ERROR("PlanetImage", "PlanetImage must be a child of PlanetView");
         return NODE_INDEX_UNDEFINED;
     }
@@ -4018,9 +4145,8 @@ static DcAppNodeIndex _process_xml_node_planet_image(DcAppDisplayBuilderContext 
 
     //- inherit planet and coordinate state
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    dc_node.planet_image.planet_def_index = parent->planet_view.planet_def_index;
-    dc_node.planet_image.crs = parent->planet_view.crs;
+    dc_node.planet_image.planet_def_index = planet_parent->planet_view.planet_def_index;
+    dc_node.planet_image.crs = planet_parent->planet_view.crs;
 
     //- resolve the texture source
 
@@ -4120,9 +4246,11 @@ static DcAppNodeIndex _process_xml_node_planet_image(DcAppDisplayBuilderContext 
 }
 
 static DcAppNodeIndex _process_xml_node_planet_line(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW &&
-        parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent ||
+        (planet_parent->type != NODE_TYPE_PLANET_VIEW && planet_parent->type != NODE_TYPE_PLANET_CONTAINER)) {
         DC_LOG_ERROR("PlanetLine", "PlanetLine must be a child of PlanetView or PlanetContainer");
         return NODE_INDEX_UNDEFINED;
     }
@@ -4131,13 +4259,12 @@ static DcAppNodeIndex _process_xml_node_planet_line(DcAppDisplayBuilderContext *
     dc_node.type = NODE_TYPE_PLANET_LINE;
     dc_node.parent = parent_node_index;
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    if (parent_elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
-        dc_node.planet_line.planet_def_index = parent->planet_container.planet_def_index;
+    if (planet_parent->type == NODE_TYPE_PLANET_CONTAINER) {
+        dc_node.planet_line.planet_def_index = planet_parent->planet_container.planet_def_index;
         dc_node.planet_line.crs = DC_APP_PLANET_CRS_GEODETIC;
     } else {
-        dc_node.planet_line.planet_def_index = parent->planet_view.planet_def_index;
-        dc_node.planet_line.crs = parent->planet_view.crs;
+        dc_node.planet_line.planet_def_index = planet_parent->planet_view.planet_def_index;
+        dc_node.planet_line.crs = planet_parent->planet_view.crs;
     }
     dc_node.planet_line.sb_points_static = NULL;
     dc_node.planet_line.sb_points_dynamic = NULL;
@@ -4186,9 +4313,11 @@ static DcAppNodeIndex _process_xml_node_planet_line(DcAppDisplayBuilderContext *
 }
 
 static DcAppNodeIndex _process_xml_node_planet_polygon(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW &&
-        parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent ||
+        (planet_parent->type != NODE_TYPE_PLANET_VIEW && planet_parent->type != NODE_TYPE_PLANET_CONTAINER)) {
         DC_LOG_ERROR("PlanetPolygon", "PlanetPolygon must be a child of PlanetView or PlanetContainer");
         return NODE_INDEX_UNDEFINED;
     }
@@ -4197,13 +4326,12 @@ static DcAppNodeIndex _process_xml_node_planet_polygon(DcAppDisplayBuilderContex
     dc_node.type = NODE_TYPE_PLANET_POLYGON;
     dc_node.parent = parent_node_index;
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    if (parent_elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
-        dc_node.planet_polygon.planet_def_index = parent->planet_container.planet_def_index;
+    if (planet_parent->type == NODE_TYPE_PLANET_CONTAINER) {
+        dc_node.planet_polygon.planet_def_index = planet_parent->planet_container.planet_def_index;
         dc_node.planet_polygon.crs = DC_APP_PLANET_CRS_GEODETIC;
     } else {
-        dc_node.planet_polygon.planet_def_index = parent->planet_view.planet_def_index;
-        dc_node.planet_polygon.crs = parent->planet_view.crs;
+        dc_node.planet_polygon.planet_def_index = planet_parent->planet_view.planet_def_index;
+        dc_node.planet_polygon.crs = planet_parent->planet_view.crs;
     }
     dc_node.planet_polygon.sb_points_static = NULL;
     dc_node.planet_polygon.sb_points_dynamic = NULL;
@@ -4340,9 +4468,11 @@ static DcAppNodeIndex _process_xml_node_planet_shader(DcAppDisplayBuilderContext
 }
 
 static DcAppNodeIndex _process_xml_node_planet_sphere(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
     (void)directory;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
         DC_LOG_ERROR("PlanetSphere", "PlanetSphere must be a child of PlanetView");
         return NODE_INDEX_UNDEFINED;
     }
@@ -4353,9 +4483,8 @@ static DcAppNodeIndex _process_xml_node_planet_sphere(DcAppDisplayBuilderContext
 
     //- inherit planet and coordinate state
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    dc_node.planet_sphere.planet_def_index = parent->planet_view.planet_def_index;
-    dc_node.planet_sphere.crs = parent->planet_view.crs;
+    dc_node.planet_sphere.planet_def_index = planet_parent->planet_view.planet_def_index;
+    dc_node.planet_sphere.crs = planet_parent->planet_view.crs;
 
     //- resolve sphere position
 
@@ -4423,10 +4552,12 @@ static DcAppNodeIndex _process_xml_node_planet_sphere(DcAppDisplayBuilderContext
 }
 
 static DcAppNodeIndex _process_xml_node_planet_text(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
     (void)directory;
 
-    if (parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW &&
-        parent_elem_type != DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent ||
+        (planet_parent->type != NODE_TYPE_PLANET_VIEW && planet_parent->type != NODE_TYPE_PLANET_CONTAINER)) {
         DC_LOG_ERROR("PlanetText", "PlanetText must be a child of PlanetView or PlanetContainer");
         return NODE_INDEX_UNDEFINED;
     }
@@ -4435,13 +4566,12 @@ static DcAppNodeIndex _process_xml_node_planet_text(DcAppDisplayBuilderContext *
     dc_node.type = NODE_TYPE_PLANET_TEXT;
     dc_node.parent = parent_node_index;
 
-    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
-    if (parent_elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
-        dc_node.planet_text.planet_def_index = parent->planet_container.planet_def_index;
+    if (planet_parent->type == NODE_TYPE_PLANET_CONTAINER) {
+        dc_node.planet_text.planet_def_index = planet_parent->planet_container.planet_def_index;
         dc_node.planet_text.crs = DC_APP_PLANET_CRS_CARTESIAN;
     } else {
-        dc_node.planet_text.planet_def_index = parent->planet_view.planet_def_index;
-        dc_node.planet_text.crs = parent->planet_view.crs;
+        dc_node.planet_text.planet_def_index = planet_parent->planet_view.planet_def_index;
+        dc_node.planet_text.crs = planet_parent->planet_view.crs;
     }
 
     xmlChar *raw_crs = xmlGetProp(xml_node, BAD_CAST "CRS");
@@ -5655,14 +5785,26 @@ static DcAppNodeIndex _process_xml_node_variable(DcAppDisplayBuilderContext *xml
 }
 
 static DcAppNodeIndex _process_xml_node_vertex(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
-    DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(xml_node);
+    (void)directory;
 
     DcAppNode *parent_node = _get_node(xml_ctx, parent_node_index);
+    if (!parent_node) {
+        DC_LOG_ERROR("Vertex", "Missing parent node");
+        return NODE_INDEX_UNDEFINED;
+    }
+
     switch (parent_node->type) {
         case NODE_TYPE_LINE:
         case NODE_TYPE_POLYGON: {
+            bool direct_line_vertex = parent_node->type == NODE_TYPE_LINE &&
+                                      parent_elem_type == DC_APP_XML_ELEMENT_TYPE_LINE;
+            bool direct_polygon_vertex = parent_node->type == NODE_TYPE_POLYGON &&
+                                         parent_elem_type == DC_APP_XML_ELEMENT_TYPE_POLYGON;
+            if (!direct_line_vertex && !direct_polygon_vertex) {
+                DC_LOG_ERROR("Vertex", "Vertex must be a direct child of Line or Polygon");
+                return NODE_INDEX_UNDEFINED;
+            }
 
-            // vertex data
             DcAppVertexData vertex = {};
             vertex.position.x = DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED;
             vertex.position.y = DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED;
@@ -5691,6 +5833,11 @@ static DcAppNodeIndex _process_xml_node_vertex(DcAppDisplayBuilderContext *xml_c
                 xmlFree(raw_y_position);
             } else {
                 DC_LOG_ERROR("Vertex", "Missing 'Y' attribute");
+            }
+
+            if (vertex.position.x == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED ||
+                vertex.position.y == DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED) {
+                return NODE_INDEX_UNDEFINED;
             }
 
             // parent x align
@@ -5725,32 +5872,31 @@ static DcAppNodeIndex _process_xml_node_vertex(DcAppDisplayBuilderContext *xml_c
                 vertex.negate_y = DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED;
             }
 
-            switch (parent_node->type) {
-                case NODE_TYPE_LINE:
-                    // add to parent
-                    sbpush(parent_node->line.sb_vertices, vertex);
-
-                    // check point count
-                    if (sbcount(parent_node->line.sb_vertices) > DC_APP_NODE_LINE_MAX_POINTS) {
-                        DC_LOG_ERROR("Line", "Maximum number of points exceeded");
-                    }
+            if (parent_node->type == NODE_TYPE_LINE) {
+                if (sbcount(parent_node->line.sb_vertices) >= DC_APP_NODE_LINE_MAX_POINTS) {
+                    DC_LOG_ERROR("Line", "Maximum number of points exceeded");
                     break;
-                case NODE_TYPE_POLYGON:
-                    // add to parent
-                    sbpush(parent_node->polygon.sb_vertices, vertex);
-
-                    // check point count
-                    if (sbcount(parent_node->polygon.sb_vertices) > DC_APP_NODE_POLYGON_MAX_POINTS) {
-                        DC_LOG_ERROR("Polygon", "Maximum number of points exceeded");
-                    }
+                }
+                sbpush(parent_node->line.sb_vertices, vertex);
+            } else {
+                if (sbcount(parent_node->polygon.sb_vertices) >= DC_APP_NODE_POLYGON_MAX_POINTS) {
+                    DC_LOG_ERROR("Polygon", "Maximum number of points exceeded");
                     break;
-                default:
-                    break;
+                }
+                sbpush(parent_node->polygon.sb_vertices, vertex);
             }
             break;
         }
         case NODE_TYPE_PLANET_LINE:
         case NODE_TYPE_PLANET_POLYGON: {
+            bool direct_planet_line_vertex = parent_node->type == NODE_TYPE_PLANET_LINE &&
+                                             parent_elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_LINE;
+            bool direct_planet_polygon_vertex = parent_node->type == NODE_TYPE_PLANET_POLYGON &&
+                                                parent_elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON;
+            if (!direct_planet_line_vertex && !direct_planet_polygon_vertex) {
+                DC_LOG_ERROR("Vertex", "Vertex must be a direct child of PlanetLine or PlanetPolygon");
+                return NODE_INDEX_UNDEFINED;
+            }
 
             DcAppPlanetVertexDynamic pv = {};
             pv.lat = DC_APP_VARIABLE_REGISTRY_VALUE_INDEX_UNDEFINED;
@@ -5980,6 +6126,25 @@ static DcAppNodeIndex _register_node(DcAppDisplayBuilderContext *xml_ctx, DcAppN
 
 static DcAppNode *_get_node(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeIndex index) {
     return dc_app_display_model_get_node(xml_ctx->scene, index);
+}
+
+static DcAppNode *_find_semantic_planet_parent(DcAppDisplayBuilderContext *xml_ctx, DcAppNodeIndex parent_node_index) {
+    DcAppNode *parent = _get_node(xml_ctx, parent_node_index);
+    while (parent) {
+        switch (parent->type) {
+            case NODE_TYPE_PLANET_VIEW:
+            case NODE_TYPE_PLANET_CONTAINER:
+                return parent;
+            case NODE_TYPE_CONDITIONAL:
+            case NODE_TYPE_STATE_IF_TRUE:
+            case NODE_TYPE_STATE_IF_FALSE:
+                parent = _get_node(xml_ctx, parent->parent);
+                break;
+            default:
+                return NULL;
+        }
+    }
+    return NULL;
 }
 
 static bool _load_color_from_string(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, const char *attr_name, DcAppNodeValueIndex4 *color_out) {

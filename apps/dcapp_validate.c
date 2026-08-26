@@ -17,6 +17,8 @@ typedef struct {
     int warning_count;
 } ValidationContext;
 
+#define DC_APP_VALIDATE_MAX_GEOMETRY_POINTS 1000u
+
 //~ attribute schemas
 
 static const char *_valid_attrs_common[] = {"Style", "_Directory", NULL};
@@ -73,6 +75,10 @@ static const char *_valid_attrs_window[] = {"Title", "ActiveDisplay", "UpdateRat
 static void _validate_node(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType parent_type);
 static void _validate_children(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType parent_type);
 static bool _is_valid_child(DcAppXmlElementType parent_type, DcAppXmlElementType child_type);
+static bool _is_valid_child_in_context(xmlNodePtr node, DcAppXmlElementType parent_type, DcAppXmlElementType child_type);
+static bool _is_conditional_wrapper(DcAppXmlElementType elem_type);
+static DcAppXmlElementType _find_conditional_owner(xmlNodePtr node);
+static bool _is_valid_planet_owner_child(DcAppXmlElementType owner_type, DcAppXmlElementType child_type);
 static bool _is_window_render_parent(DcAppXmlElementType parent_type);
 static void _validate_required_attributes(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType elem_type);
 static void _validate_planet_local_attributes(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType elem_type, DcAppXmlElementType parent_type);
@@ -162,6 +168,105 @@ void _validate_children(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElement
     }
 }
 
+static bool _is_conditional_wrapper(DcAppXmlElementType elem_type) {
+    return elem_type == DC_APP_XML_ELEMENT_TYPE_IF ||
+           elem_type == DC_APP_XML_ELEMENT_TYPE_TRUE ||
+           elem_type == DC_APP_XML_ELEMENT_TYPE_FALSE;
+}
+
+// conditional content inherits only through uninterrupted If/True/False
+// ancestry; any other element establishes a new child grammar
+static DcAppXmlElementType _find_conditional_owner(xmlNodePtr node) {
+    while (node) {
+        DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(node);
+        if (!_is_conditional_wrapper(elem_type)) {
+            return elem_type;
+        }
+        node = node->parent;
+    }
+    return DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+}
+
+static bool _is_valid_planet_owner_child(DcAppXmlElementType owner_type, DcAppXmlElementType child_type) {
+    if (owner_type == DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
+        switch (child_type) {
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_BREADCRUMBS:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_ELLIPSE:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_GEO_JSON:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_IMAGE:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_LINE:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_SPHERE:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_TEXT:
+            case DC_APP_XML_ELEMENT_TYPE_IF:
+            case DC_APP_XML_ELEMENT_TYPE_MOUSE_MOTION:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    if (owner_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
+        return child_type == DC_APP_XML_ELEMENT_TYPE_PLANET_LINE ||
+               child_type == DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON ||
+               child_type == DC_APP_XML_ELEMENT_TYPE_PLANET_TEXT ||
+               child_type == DC_APP_XML_ELEMENT_TYPE_IF;
+    }
+
+    return false;
+}
+
+static bool _is_valid_child_in_context(xmlNodePtr node, DcAppXmlElementType parent_type, DcAppXmlElementType child_type) {
+    if (!_is_conditional_wrapper(parent_type)) {
+        return _is_valid_child(parent_type, child_type);
+    }
+
+    // branch nodes are always structural children of If
+    if (parent_type == DC_APP_XML_ELEMENT_TYPE_IF &&
+        (child_type == DC_APP_XML_ELEMENT_TYPE_TRUE || child_type == DC_APP_XML_ELEMENT_TYPE_FALSE)) {
+        return true;
+    }
+
+    // Variable declarations are processed while the display is built, even
+    // when their runtime If branch is not active.
+    if (child_type == DC_APP_XML_ELEMENT_TYPE_VARIABLE) {
+        return _is_valid_child(parent_type, child_type);
+    }
+
+    DcAppXmlElementType owner_type = _find_conditional_owner(node ? node->parent : NULL);
+
+    // parent-sensitive state blocks use the grammar of the element outside
+    // the uninterrupted If/True/False chain
+    switch (child_type) {
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_PRESSED:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_RELEASED:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_DISABLED:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_TRANSITION:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_INDICATOR_ON:
+        case DC_APP_XML_ELEMENT_TYPE_BUTTON_INDICATOR_OFF:
+        case DC_APP_XML_ELEMENT_TYPE_MOUSE_ACTIVE:
+        case DC_APP_XML_ELEMENT_TYPE_MOUSE_INACTIVE:
+        case DC_APP_XML_ELEMENT_TYPE_MOUSE_HOVERED:
+        case DC_APP_XML_ELEMENT_TYPE_MOUSE_PRESSED:
+        case DC_APP_XML_ELEMENT_TYPE_MOUSE_RELEASED:
+            return _is_valid_child(owner_type, child_type);
+        default:
+            break;
+    }
+
+    if (owner_type == DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW ||
+        owner_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
+        return _is_valid_planet_owner_child(owner_type, child_type);
+    }
+    if (owner_type == DC_APP_XML_ELEMENT_TYPE_POLYGON) {
+        return child_type != DC_APP_XML_ELEMENT_TYPE_VERTEX &&
+               _is_valid_child(owner_type, child_type);
+    }
+    return _is_valid_child(parent_type, child_type);
+}
+
 void _validate_node(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType parent_type) {
 
     DcAppXmlElementType elem_type = dc_app_xml_element_type_from_xml_node(node);
@@ -171,9 +276,13 @@ void _validate_node(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType
     }
 
     //- validate node placement
-    if (!_is_valid_child(parent_type, elem_type)) {
+    if (!_is_valid_child_in_context(node, parent_type, elem_type)) {
+        const char *parent_name = node->parent ? (const char *)node->parent->name : "root";
+        if (_is_conditional_wrapper(parent_type)) {
+            parent_name = dc_app_xml_element_type_to_string(_find_conditional_owner(node->parent));
+        }
         DC_LOG_ERROR("Validate", "<%s> is not a valid child of <%s> (line %ld)",
-                     node->name, node->parent ? node->parent->name : (xmlChar *)"root", xmlGetLineNo(node));
+                     node->name, parent_name, xmlGetLineNo(node));
         ctx->error_count++;
     }
 
@@ -194,8 +303,9 @@ void _validate_node(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType
 }
 
 static void _validate_planet_local_attributes(ValidationContext *ctx, xmlNodePtr node, DcAppXmlElementType elem_type, DcAppXmlElementType parent_type) {
-    //- direct planet container primitives
-    if (parent_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
+    //- planet container primitives, including conditional branch children
+    DcAppXmlElementType owner_type = _find_conditional_owner(node ? node->parent : NULL);
+    if (owner_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
         if (elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_LINE || elem_type == DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON) {
             const char *invalid_attrs[] = {"CRS", "HeightAboveTerrain"};
             for (size_t i = 0; i < sizeof(invalid_attrs) / sizeof(invalid_attrs[0]); i++) {
@@ -234,8 +344,9 @@ static void _validate_planet_local_attributes(ValidationContext *ctx, xmlNodePtr
     if (elem_type != DC_APP_XML_ELEMENT_TYPE_VERTEX ||
         (parent_type != DC_APP_XML_ELEMENT_TYPE_PLANET_LINE && parent_type != DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON)) return;
 
-    xmlNodePtr container = node->parent ? node->parent->parent : NULL;
-    if (!container || dc_app_xml_element_type_from_xml_node(container) != DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) return;
+    xmlNodePtr primitive = node->parent;
+    owner_type = _find_conditional_owner(primitive ? primitive->parent : NULL);
+    if (owner_type != DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) return;
 
     if (!xmlHasProp(node, BAD_CAST "X")) {
         DC_LOG_ERROR("Validate", "<Vertex> inside <PlanetContainer> requires 'X' (line %ld)", xmlGetLineNo(node));
@@ -496,9 +607,22 @@ bool _is_valid_child(DcAppXmlElementType parent_type, DcAppXmlElementType child_
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_HOVERED:
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_PRESSED:
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_RELEASED:
+            case DC_APP_XML_ELEMENT_TYPE_MOUSE_MOTION:
                 return true;
             default:
                 return false;
+        }
+    }
+
+    //- indicator states may be gated by ButtonEnabled
+    if (parent_type == DC_APP_XML_ELEMENT_TYPE_BUTTON_ENABLED) {
+        switch (child_type) {
+            case DC_APP_XML_ELEMENT_TYPE_BUTTON_INDICATOR_ON:
+            case DC_APP_XML_ELEMENT_TYPE_BUTTON_INDICATOR_OFF:
+            case DC_APP_XML_ELEMENT_TYPE_BUTTON_TRANSITION:
+                return true;
+            default:
+                break;
         }
     }
 
@@ -723,27 +847,12 @@ bool _is_valid_child(DcAppXmlElementType parent_type, DcAppXmlElementType child_
 
     //- planet view children
     if (parent_type == DC_APP_XML_ELEMENT_TYPE_PLANET_VIEW) {
-        switch (child_type) {
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_BREADCRUMBS:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_ELLIPSE:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_GEO_JSON:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_IMAGE:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_LINE:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_SPHERE:
-            case DC_APP_XML_ELEMENT_TYPE_PLANET_TEXT:
-                return true;
-            default:
-                return false;
-        }
+        return _is_valid_planet_owner_child(parent_type, child_type);
     }
 
     //- planet container children
     if (parent_type == DC_APP_XML_ELEMENT_TYPE_PLANET_CONTAINER) {
-        return child_type == DC_APP_XML_ELEMENT_TYPE_PLANET_LINE ||
-               child_type == DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON ||
-               child_type == DC_APP_XML_ELEMENT_TYPE_PLANET_TEXT;
+        return _is_valid_planet_owner_child(parent_type, child_type);
     }
 
     //- planet primitive children
@@ -780,6 +889,7 @@ bool _is_valid_child(DcAppXmlElementType parent_type, DcAppXmlElementType child_
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_HOVERED:
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_PRESSED:
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_RELEASED:
+            case DC_APP_XML_ELEMENT_TYPE_MOUSE_MOTION:
                 return true;
             default:
                 return false;
@@ -826,6 +936,7 @@ bool _is_valid_child(DcAppXmlElementType parent_type, DcAppXmlElementType child_
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_HOVERED:
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_PRESSED:
             case DC_APP_XML_ELEMENT_TYPE_MOUSE_RELEASED:
+            case DC_APP_XML_ELEMENT_TYPE_MOUSE_MOTION:
                 return true;
             default:
                 return false;
@@ -1132,6 +1243,58 @@ void _validate_required_attributes(ValidationContext *ctx, xmlNodePtr node, DcAp
                 xmlFree(vx);
             if (vy)
                 xmlFree(vy);
+            break;
+        }
+
+            //- geometry
+
+        case DC_APP_XML_ELEMENT_TYPE_LINE:
+        case DC_APP_XML_ELEMENT_TYPE_POLYGON: {
+            DcAppXmlElementType parent_type = node->parent
+                                                  ? dc_app_xml_element_type_from_xml_node(node->parent)
+                                                  : DC_APP_XML_ELEMENT_TYPE_UNDEFINED;
+            if (parent_type == DC_APP_XML_ELEMENT_TYPE_DEFAULT ||
+                parent_type == DC_APP_XML_ELEMENT_TYPE_STYLE) {
+                break;
+            }
+
+            unsigned int minimum = elem_type == DC_APP_XML_ELEMENT_TYPE_LINE ? 2 : 3;
+            unsigned int vertex_count = 0;
+            for (xmlNodePtr child = node->children; child; child = child->next) {
+                if (dc_app_xml_element_type_from_xml_node(child) == DC_APP_XML_ELEMENT_TYPE_VERTEX) {
+                    vertex_count++;
+                }
+            }
+            if (vertex_count < minimum) {
+                DC_LOG_ERROR("Validate", "<%s> has %u <Vertex> element(s); at least %u required (line %ld)",
+                             node->name, vertex_count, minimum, xmlGetLineNo(node));
+                ctx->error_count++;
+            } else if (vertex_count > DC_APP_VALIDATE_MAX_GEOMETRY_POINTS) {
+                DC_LOG_ERROR("Validate", "<%s> has %u <Vertex> elements; limit is %u (line %ld)",
+                             node->name, vertex_count,
+                             DC_APP_VALIDATE_MAX_GEOMETRY_POINTS, xmlGetLineNo(node));
+                ctx->error_count++;
+            }
+            break;
+        }
+
+        case DC_APP_XML_ELEMENT_TYPE_VERTEX: {
+            DcAppXmlElementType owner_type = dc_app_xml_element_type_from_xml_node(node->parent);
+            if (owner_type != DC_APP_XML_ELEMENT_TYPE_LINE &&
+                owner_type != DC_APP_XML_ELEMENT_TYPE_POLYGON) {
+                break;
+            }
+
+            if (!xmlHasProp(node, BAD_CAST "X") && !xmlHasProp(node, BAD_CAST "PositionX")) {
+                DC_LOG_ERROR("Validate", "<Vertex> inside <%s> requires 'X' or 'PositionX' (line %ld)",
+                             dc_app_xml_element_type_to_string(owner_type), xmlGetLineNo(node));
+                ctx->error_count++;
+            }
+            if (!xmlHasProp(node, BAD_CAST "Y") && !xmlHasProp(node, BAD_CAST "PositionY")) {
+                DC_LOG_ERROR("Validate", "<Vertex> inside <%s> requires 'Y' or 'PositionY' (line %ld)",
+                             dc_app_xml_element_type_to_string(owner_type), xmlGetLineNo(node));
+                ctx->error_count++;
+            }
             break;
         }
 

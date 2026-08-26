@@ -119,14 +119,22 @@
                 <Button Style="FeedbackButton" Type="#_button_toggle_" X="190" Width="190"
                     Variable="ControlledState" On="1" Off="0"
                     EnableVariable="MasterEnable" EnableOn="1">
-                    <ButtonIndicatorOn>
-                        <Rectangle Style="ButtonOn"/>
-                        <Text Style="ButtonText">OUTPUT ON</Text>
-                    </ButtonIndicatorOn>
-                    <ButtonIndicatorOff>
-                        <Rectangle Style="ButtonOff"/>
-                        <Text Style="ButtonText">OUTPUT OFF</Text>
-                    </ButtonIndicatorOff>
+                    <If Value1="@MasterEnable" Operator="#_if_eq_" Value2="1">
+                        <ButtonIndicatorOn>
+                            <Rectangle Style="ButtonOn"/>
+                            <Text Style="ButtonText">OUTPUT ON</Text>
+                        </ButtonIndicatorOn>
+                        <ButtonIndicatorOff>
+                            <Rectangle Style="ButtonOff"/>
+                            <Text Style="ButtonText">OUTPUT OFF</Text>
+                        </ButtonIndicatorOff>
+                        <ButtonPressed>
+                            <Text Style="ButtonText">PRESSING</Text>
+                        </ButtonPressed>
+                        <ButtonReleased>
+                            <Text Style="ButtonText">UPDATED</Text>
+                        </ButtonReleased>
+                    </If>
                     <ButtonDisabled>
                         <Rectangle Rounded="6" FillColor="0.08 0.09 0.10 1"
                             LineColor="0.16 0.18 0.20 1" LineWidth="1"/>
@@ -188,7 +196,7 @@
 
             <Container X="474" Y="28" Width="404" Height="110">
                 <Rectangle Style="Card"/>
-                <Text X="24" Y="82">Raw pointer target</Text>
+                <Text X="24" Y="82">Raw pointer target (ARMED only)</Text>
                 <Text X="380" Y="82" LocalAlignX="#_align_right_" Style="Muted">press @PointerPresses  release @PointerReleases</Text>
 
                 <Rectangle X="24" Y="24" Width="356" Height="42" Rounded="6"
@@ -202,8 +210,10 @@
                         <Rectangle Rounded="6" FillColor="0.10 0.36 0.43 1"/>
                         <Text Style="ButtonText">HELD</Text>
                     </MouseActive>
-                    <MousePressed><Set Variable="PointerPresses" Operator="#_set_add_">1</Set></MousePressed>
-                    <MouseReleased><Set Variable="PointerReleases" Operator="#_set_add_">1</Set></MouseReleased>
+                    <If Value1="@MasterEnable" Operator="#_if_eq_" Value2="1">
+                        <MousePressed><Set Variable="PointerPresses" Operator="#_set_add_">1</Set></MousePressed>
+                        <MouseReleased><Set Variable="PointerReleases" Operator="#_set_add_">1</Set></MouseReleased>
+                    </If>
                 </Rectangle>
             </Container>
         </Panel>

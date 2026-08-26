@@ -303,7 +303,7 @@ Draws a polyline through a series of vertices.
 | `LineWidth` | — | number/var | No | Line width |
 | `LinePattern` | — | integer/var | No | 8-bit dash pattern, such as `0xFF` solid or `0xAA` dashed |
 
-Add one `<Vertex>` child for each point in the line.
+Add 2–1,000 `<Vertex>` children.
 
 ### `<Polygon>`
 
@@ -322,15 +322,14 @@ Draws a filled or outlined polygon.
 | `LinePattern` | — | integer/var | No | 8-bit dash pattern for the outline, such as `0xFF` solid or `0xAA` dashed |
 | `Rounded` | — | boolean/var | No | Round corners (radius = 10% of bounding box's smaller dimension) |
 
-Add `<Vertex>` children for the polygon points. Mouse event elements may also
-be nested here.
+Add 3–1,000 `<Vertex>` children. Mouse event elements may also be nested here.
 
 Filled polygons must be convex with vertices in perimeter order. Outlined
 polygons do not have that convexity restriction.
 
 ### `<Vertex>`
 
-Defines a point for `<Line>` or `<Polygon>` elements.
+Defines a point for a `<Line>` or `<Polygon>` and must be a direct child.
 
 | Attribute | Aliases | Type | Required | Description |
 |-----------|---------|------|----------|-------------|
@@ -666,7 +665,7 @@ drawable parent.
 
 Its children are `<PlanetBreadcrumbs>`, `<PlanetContainer>`, `<PlanetEllipse>`,
 `<PlanetGeoJSON>`, `<PlanetImage>`, `<PlanetLine>`, `<PlanetPolygon>`,
-`<PlanetSphere>`, and `<PlanetText>`
+`<PlanetSphere>`, `<PlanetText>`, `<MouseMotion>`, and `<If>`.
 
 The following drawable planet overlays support `Enabled`:
 `<PlanetBreadcrumbs>`, `<PlanetContainer>`, `<PlanetEllipse>`,
