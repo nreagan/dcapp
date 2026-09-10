@@ -346,6 +346,49 @@ frame directly. Positions are meters and attitude angles are degrees.
 `CameraOrthographic="1"` selects parallel projection for either camera mode;
 the default is perspective.
 
+### `<PlanetPick>`
+
+`PlanetPick` publishes the reference-body position under the pointer
+while the primary pointer button is held. It is a leaf element and belongs
+under a `PlanetView`, either directly or inside that view's `If`/`True`/`False`
+branches.
+
+```xml
+<Variable Type="#_variable_boolean_" InitialValue="false">PickEnabled</Variable>
+<Variable Type="#_variable_double_" InitialValue="0">PickLatitude</Variable>
+<Variable Type="#_variable_double_" InitialValue="0">PickLongitude</Variable>
+
+<PlanetView ...>
+    <If Value="@PickEnabled">
+        <PlanetPick
+            VariableLatitude="PickLatitude"
+            VariableLongitude="PickLongitude"/>
+    </If>
+    <PlanetSphere Latitude="@PickLatitude" Longitude="@PickLongitude"
+        HeightAboveTerrain="1000" Radius="10000"/>
+</PlanetView>
+```
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `VariableLatitude` | variable name | Yes | Existing double variable that receives latitude in degrees, in `[-90, 90]` |
+| `VariableLongitude` | variable name | Yes | Existing double variable that receives east-positive longitude in degrees, in `[-180, 180]` |
+
+Both variable names are written without `@`, must be declared before the
+element, and must identify distinct double variables. A successful hit updates
+both values together on each display traversal while the primary pointer is
+down. Pointer-up, disabled conditionals, invalid or
+outside-view positions, and misses leave both values unchanged, so the last
+successful position remains latched.
+
+Picking intersects the planet's reference body, not rendered terrain. The
+current body is spherical; the contract also applies if the body model becomes
+ellipsoidal. The corresponding draw API operation is
+`dc_draw->planet_view_xy_to_geodetic(view, xy, &geodetic)`. `xy` uses the
+`PlanetView`'s local bottom-left coordinate space. On success, `geodetic.x` is
+latitude, `geodetic.y` is longitude, and `geodetic.z` is exactly `0.0` on the
+reference surface. On failure, the output is untouched.
+
 ## Planet overlays
 
 ### `<PlanetContainer>`

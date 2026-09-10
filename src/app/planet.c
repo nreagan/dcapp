@@ -537,6 +537,63 @@ DcGeojson *dc_app_planet_geojson(DcAppPlanetGeojsonHandle geojson) {
     return geojson ? geojson->geojson : NULL;
 }
 
+//~ coordinate queries
+
+bool dc_app_planet_ray_to_geodetic(DcAppPlanetHandle planet, DcAppVec3d origin, DcAppVec3d direction, DcAppVec3d *geodetic_out) {
+    if (!planet || !geodetic_out) return false;
+    if (!isfinite(origin.x) || !isfinite(origin.y) || !isfinite(origin.z) ||
+        !isfinite(direction.x) || !isfinite(direction.y) || !isfinite(direction.z))
+        return false;
+
+    double radius = planet->radius;
+    if (!isfinite(radius) || radius <= 0.0) return false;
+
+    double a = direction.x * direction.x + direction.y * direction.y + direction.z * direction.z;
+    double half_b = origin.x * direction.x + origin.y * direction.y + origin.z * direction.z;
+    double c = origin.x * origin.x + origin.y * origin.y + origin.z * origin.z - radius * radius;
+    if (!isfinite(a) || !isfinite(half_b) || !isfinite(c) || a <= 0.0) return false;
+
+    double discriminant = half_b * half_b - a * c;
+    if (!isfinite(discriminant) || discriminant < 0.0) return false;
+
+    double discriminant_root = sqrt(discriminant);
+    double q = -half_b - copysign(discriminant_root, half_b);
+    double t0 = 0.0;
+    double t1 = 0.0;
+    if (q != 0.0) {
+        t0 = q / a;
+        t1 = c / q;
+        if (t0 > t1) {
+            double temporary = t0;
+            t0 = t1;
+            t1 = temporary;
+        }
+    }
+
+    double t = -1.0;
+    if (isfinite(t0) && t0 >= 0.0) {
+        t = t0;
+    } else if (isfinite(t1) && t1 >= 0.0) {
+        t = t1;
+    }
+    if (t < 0.0) return false;
+
+    plVec3d hit = {
+        origin.x + t * direction.x,
+        origin.y + t * direction.y,
+        origin.z + t * direction.z,
+    };
+    if (!isfinite(hit.x) || !isfinite(hit.y) || !isfinite(hit.z)) return false;
+
+    plVec3d geodetic;
+    dc_geo_cartesian_to_geodetic_d(&planet->cartesian_crs, &planet->geodetic_crs, &hit, &geodetic, 1);
+    if (!isfinite(geodetic.x) || !isfinite(geodetic.y)) return false;
+
+    DcAppVec3d result = {geodetic.x, geodetic.y, 0.0};
+    *geodetic_out = result;
+    return true;
+}
+
 //~ renderer integration
 
 plPlanet *dc_app_planet_pl(DcAppPlanetHandle planet) {

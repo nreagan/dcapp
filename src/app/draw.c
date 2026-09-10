@@ -267,6 +267,7 @@ static const DcAppDrawApi dc_app_draw_interface = {
     .stencil_end = dc_app_draw_stencil_end,
     .planet_view_geodetic = dc_app_draw_planet_view_geodetic,
     .planet_view_cartesian = dc_app_draw_planet_view_cartesian,
+    .planet_view_xy_to_geodetic = dc_app_draw_planet_view_xy_to_geodetic,
     .planet_container_push_geodetic = dc_app_draw_planet_container_push_geodetic,
     .planet_container_pop = dc_app_draw_planet_container_pop,
     .planet_line_local = dc_app_draw_planet_line_local,
@@ -1476,6 +1477,66 @@ DcAppDrawPlanetViewHandle dc_app_draw_planet_view_cartesian(DcAppDrawContext *ct
     _apply_planet_view_options(draw_view);
     sbpush(ctx->sb_planet_views, draw_view);
     return draw_view;
+}
+
+bool dc_app_draw_planet_view_xy_to_geodetic(DcAppDrawPlanetViewHandle draw_view, DcAppVec2 xy, DcAppVec3d *geodetic_out) {
+    if (!draw_view || !draw_view->view || !geodetic_out) return false;
+    if (!isfinite(xy.x) || !isfinite(xy.y)) return false;
+
+    double width = (double)draw_view->area.dimensions[0];
+    double height = (double)draw_view->area.dimensions[1];
+    if (!isfinite(width) || !isfinite(height) || width <= 0.0 || height <= 0.0) return false;
+    if ((double)xy.x < 0.0 || (double)xy.x > width || (double)xy.y < 0.0 || (double)xy.y > height) return false;
+
+    plCamera *camera = &draw_view->camera;
+    bool perspective = camera->tType == PL_CAMERA_TYPE_PERSPECTIVE ||
+                       camera->tType == PL_CAMERA_TYPE_PERSPECTIVE_REVERSE_Z;
+    bool orthographic = camera->tType == PL_CAMERA_TYPE_ORTHOGRAPHIC ||
+                        camera->tType == PL_CAMERA_TYPE_ORTHOGRAPHIC_REVERSE_Z;
+    if (!perspective && !orthographic) return false;
+
+    double projection_x = (double)camera->tProjMat.col[0].x;
+    double projection_y = (double)camera->tProjMat.col[1].y;
+    if (!isfinite(projection_x) || !isfinite(projection_y) || projection_x <= 0.0 || projection_y <= 0.0) return false;
+
+    double horizontal = (2.0 * (double)xy.x / width - 1.0) / projection_x;
+    double vertical = (2.0 * (double)xy.y / height - 1.0) / projection_y;
+    DcAppVec3d origin = {
+        camera->tPosDouble.x,
+        camera->tPosDouble.y,
+        camera->tPosDouble.z,
+    };
+    DcAppVec3d direction = {
+        camera->_tForwardVec.x,
+        camera->_tForwardVec.y,
+        camera->_tForwardVec.z,
+    };
+
+    if (perspective) {
+        direction.x += horizontal * (double)camera->_tRightVec.x + vertical * (double)camera->_tUpVec.x;
+        direction.y += horizontal * (double)camera->_tRightVec.y + vertical * (double)camera->_tUpVec.y;
+        direction.z += horizontal * (double)camera->_tRightVec.z + vertical * (double)camera->_tUpVec.z;
+
+        double direction_length = sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+        if (!isfinite(direction_length) || direction_length <= 0.0) return false;
+        direction.x /= direction_length;
+        direction.y /= direction_length;
+        direction.z /= direction_length;
+    } else {
+        origin.x += horizontal * (double)camera->_tRightVec.x + vertical * (double)camera->_tUpVec.x;
+        origin.y += horizontal * (double)camera->_tRightVec.y + vertical * (double)camera->_tUpVec.y;
+        origin.z += horizontal * (double)camera->_tRightVec.z + vertical * (double)camera->_tUpVec.z;
+    }
+
+    if (!isfinite(origin.x) || !isfinite(origin.y) || !isfinite(origin.z) ||
+        !isfinite(direction.x) || !isfinite(direction.y) || !isfinite(direction.z))
+        return false;
+
+    DcAppPlanetHandle planet = dc_app_planet_view_planet(draw_view->view);
+    DcAppVec3d geodetic;
+    if (!dc_app_planet_ray_to_geodetic(planet, origin, direction, &geodetic)) return false;
+    *geodetic_out = geodetic;
+    return true;
 }
 
 bool dc_app_draw_planet_container_push_geodetic(DcAppDrawContext *ctx, DcAppDrawPlanetViewHandle draw_view, double lat, double lon, double height, DcAppPlanetLocalTransform transform) {

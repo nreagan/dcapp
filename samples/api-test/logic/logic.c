@@ -395,6 +395,7 @@ static void require_api_tables(void) {
     REQUIRE_API(dc_draw, stencil_end);
     REQUIRE_API(dc_draw, planet_view_geodetic);
     REQUIRE_API(dc_draw, planet_view_cartesian);
+    REQUIRE_API(dc_draw, planet_view_xy_to_geodetic);
     REQUIRE_API(dc_draw, planet_container_push_geodetic);
     REQUIRE_API(dc_draw, planet_container_pop);
     REQUIRE_API(dc_draw, planet_line_local);

@@ -48,6 +48,10 @@ bool dc_app_planet_update_breadcrumbs_cartesian(DcAppPlanetBreadcrumbsHandle bre
 void dc_app_planet_clear_breadcrumbs(DcAppPlanetBreadcrumbsHandle breadcrumbs);
 DcAppPlanetBreadcrumbsPoints dc_app_planet_get_breadcrumbs_points(DcAppPlanetBreadcrumbsHandle breadcrumbs);
 
+//~ coordinate queries
+
+bool dc_app_planet_ray_to_geodetic(DcAppPlanetHandle planet, DcAppVec3d origin, DcAppVec3d direction, DcAppVec3d *geodetic_out);
+
 //~ registry metadata
 
 uint32_t dc_app_planet_count(const DcAppPlanetContext *planet_ctx);

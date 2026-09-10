@@ -40,6 +40,10 @@
     <Variable Type="#_variable_double_" InitialValue="0">PlanetPointerX</Variable>
     <Variable Type="#_variable_double_" InitialValue="0">PlanetPointerY</Variable>
 
+    <Variable Type="#_variable_boolean_" InitialValue="true">PlanetPickEnabled</Variable>
+    <Variable Type="#_variable_double_" InitialValue="-58.62">PickLatitude</Variable>
+    <Variable Type="#_variable_double_" InitialValue="-14.73">PickLongitude</Variable>
+
     <Variable Type="#_variable_integer_" InitialValue="0">TextureRefresh</Variable>
     <Variable Type="#_variable_double_" InitialValue="2000">TexMpp</Variable>
     <Variable Type="#_variable_integer_" InitialValue="1">HazardMap0Enabled</Variable>
@@ -165,6 +169,17 @@
                 </ButtonIndicatorOff>
             </Button>
 
+            <Button Style="HeaderToggle" X="840" Variable="PlanetPickEnabled">
+                <ButtonIndicatorOn>
+                    <Rectangle Style="HeaderToggleOn"/>
+                    <Text Style="ToggleLabel">Pick On</Text>
+                </ButtonIndicatorOn>
+                <ButtonIndicatorOff>
+                    <Rectangle Style="ToggleOff"/>
+                    <Text Style="ToggleOff">Pick Off</Text>
+                </ButtonIndicatorOff>
+            </Button>
+
             <Text X="290" Y="806" LocalAlignX="#_align_right_" LocalAlignY="#_align_middle_"
                 Size="13">Shaders:</Text>
 
@@ -248,12 +263,21 @@
                 </ButtonIndicatorOff>
             </Button>
 
-            <Text X="240" Y="762" LocalAlignX="#_align_center_" Size="14" FillColor="#_color_yellow_">XML: PlanetContainer</Text>
+            <Text X="240" Y="762" LocalAlignX="#_align_center_" Size="14" FillColor="#_color_yellow_">XML: PlanetContainer + waypoint</Text>
             <PlanetView Planet="Moon" CRS="#_planet_crs_geodetic_" AttitudeFrame="#_planet_attitude_frame_local_ned_" X="15" Y="300" Width="450" Height="450"
                 CameraLatitude="@Latitude" CameraLongitude="@Longitude" CameraElevation="@Elevation"
                 CameraYaw="@Heading"
                 CameraOrthographic="@UseOrtho" ShaderIndex="@LeftShader"
                 Tau="@Tau">
+                <If Value="@PlanetPickEnabled">
+                    <True>
+                        <PlanetPick VariableLatitude="PickLatitude"
+                            VariableLongitude="PickLongitude"/>
+                    </True>
+                </If>
+                <PlanetImage File="$DCAPP_HOME/assets/ring.png"
+                    Latitude="@PickLatitude" Longitude="@PickLongitude"
+                    HeightAboveTerrain="30000" Size="100000"/>
                 <PlanetBreadcrumbs CRS="#_planet_crs_geodetic_" Latitude="@OrbitLat" Longitude="@OrbitLon"
                     HeightAboveTerrain="50000" PointSpacing="25000" MaxPoints="512"
                     LineColor="0.1 0.9 1.0 0.85" LineWidth="3.5" LinePattern="0xF0"/>
@@ -407,7 +431,8 @@
                 </Button>
             </Container>
 
-            <Text X="15" Y="290" LocalAlignX="#_align_left_" Size="11" FillColor="#_color_sky_blue_">@LogicReadout</Text>
+            <Text X="15" Y="290" LocalAlignX="#_align_left_" Size="11" FillColor="#_color_yellow_">Waypoint (click or drag): lat @PickLatitude(%.2f), lon @PickLongitude(%.2f)</Text>
+            <Text X="535" Y="290" LocalAlignX="#_align_left_" Size="11" FillColor="#_color_sky_blue_">@LogicReadout</Text>
 
         </Panel>
     </Window>

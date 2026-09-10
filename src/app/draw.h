@@ -107,6 +107,7 @@ void dc_app_draw_stencil_draw(DcAppDrawContext *draw_ctx);
 void dc_app_draw_stencil_end(DcAppDrawContext *draw_ctx);
 DcAppDrawPlanetViewHandle dc_app_draw_planet_view_geodetic(DcAppDrawContext *draw_ctx, DcAppPlanetViewHandle view, double lat, double lon, double elevation, DcAppVec3 rpy, float fov_degrees, bool orthographic, DcAppPlanetViewOptions options, DcAppVec2 position, DcAppVec2 size, DcAppPlacement placement, DcAppDrawResult *result);
 DcAppDrawPlanetViewHandle dc_app_draw_planet_view_cartesian(DcAppDrawContext *draw_ctx, DcAppPlanetViewHandle view, DcAppVec3d camera_position, DcAppVec3 rpy, float fov_degrees, bool orthographic, DcAppPlanetViewOptions options, DcAppVec2 position, DcAppVec2 size, DcAppPlacement placement, DcAppDrawResult *result);
+bool dc_app_draw_planet_view_xy_to_geodetic(DcAppDrawPlanetViewHandle draw_view, DcAppVec2 xy, DcAppVec3d *geodetic_out);
 bool dc_app_draw_planet_container_push_geodetic(DcAppDrawContext *draw_ctx, DcAppDrawPlanetViewHandle view, double lat, double lon, double height, DcAppPlanetLocalTransform transform);
 void dc_app_draw_planet_container_pop(DcAppDrawContext *draw_ctx);
 void dc_app_draw_planet_line_local(DcAppDrawContext *draw_ctx, const DcAppVec2 *points, uint32_t point_count, DcAppStroke stroke);

@@ -59,6 +59,7 @@ static const char *_valid_attrs_planet_overlay[] = {"Planet", "CRS", "HeightAbov
 static const char *_valid_attrs_planet_image[] = {"File", "Width", "Height", "DimensionX", "DimensionY", "TintColor", "Color", NULL};
 static const char *_valid_attrs_planet_breadcrumbs[] = {"Altitude", "PointSpacing", "MaxPoints", "Clear", "Enabled", NULL};
 static const char *_valid_attrs_planet_geojson[] = {"File", "Planet", "CRS", "HeightAboveTerrain", "Enabled", NULL};
+static const char *_valid_attrs_planet_pick[] = {"VariableLatitude", "VariableLongitude", NULL};
 static const char *_valid_attrs_planet_vertex[] = {"Latitude", "Longitude", "Altitude", "X", "Y", "Z", NULL};
 static const char *_valid_attrs_rounded[] = {"Rounded", NULL};
 static const char *_valid_attrs_text[] = {"Size", "ShadowOffset", "UpdateRate", "Font", "Color", "Bold", "Italic", NULL};
@@ -196,6 +197,7 @@ static bool _is_valid_planet_owner_child(DcAppXmlElementType owner_type, DcAppXm
             case DC_APP_XML_ELEMENT_TYPE_PLANET_GEO_JSON:
             case DC_APP_XML_ELEMENT_TYPE_PLANET_IMAGE:
             case DC_APP_XML_ELEMENT_TYPE_PLANET_LINE:
+            case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK:
             case DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON:
             case DC_APP_XML_ELEMENT_TYPE_PLANET_SPHERE:
             case DC_APP_XML_ELEMENT_TYPE_PLANET_TEXT:
@@ -993,6 +995,7 @@ bool _is_valid_child(DcAppXmlElementType parent_type, DcAppXmlElementType child_
         case DC_APP_XML_ELEMENT_TYPE_FUNCTION:
         case DC_APP_XML_ELEMENT_TYPE_DRAW_FUNCTION:
         case DC_APP_XML_ELEMENT_TYPE_MOUSE_MOTION:
+        case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK:
             return false;
         default:
             break;
@@ -1243,6 +1246,26 @@ void _validate_required_attributes(ValidationContext *ctx, xmlNodePtr node, DcAp
                 xmlFree(vx);
             if (vy)
                 xmlFree(vy);
+            break;
+        }
+
+        case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK: {
+            xmlChar *latitude = xmlGetProp(node, BAD_CAST "VariableLatitude");
+            xmlChar *longitude = xmlGetProp(node, BAD_CAST "VariableLongitude");
+            if (!latitude) {
+                DC_LOG_ERROR("Validate", "<PlanetPick> missing required attribute 'VariableLatitude' (line %ld)", xmlGetLineNo(node));
+                ctx->error_count++;
+            }
+            if (!longitude) {
+                DC_LOG_ERROR("Validate", "<PlanetPick> missing required attribute 'VariableLongitude' (line %ld)", xmlGetLineNo(node));
+                ctx->error_count++;
+            }
+            if (latitude && longitude && strcmp((const char *)latitude, (const char *)longitude) == 0) {
+                DC_LOG_ERROR("Validate", "<PlanetPick> output variables must be distinct (line %ld)", xmlGetLineNo(node));
+                ctx->error_count++;
+            }
+            if (latitude) xmlFree(latitude);
+            if (longitude) xmlFree(longitude);
             break;
         }
 
@@ -1748,6 +1771,9 @@ static bool _is_valid_attr_for_elem(const char *attr_name, DcAppXmlElementType e
                    _attr_in_list(attr_name, _valid_attrs_color) ||
                    _attr_in_list(attr_name, _valid_attrs_line);
 
+        case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK:
+            return _attr_in_list(attr_name, _valid_attrs_planet_pick);
+
             //- text and data links
 
         case DC_APP_XML_ELEMENT_TYPE_TEXT:
@@ -1995,6 +2021,11 @@ void _validate_variable_references(ValidationContext *ctx, xmlNodePtr node, DcAp
         case DC_APP_XML_ELEMENT_TYPE_MOUSE_MOTION:
             _check_var_attr(ctx, node, "VariableX");
             _check_var_attr(ctx, node, "VariableY");
+            break;
+
+        case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK:
+            _check_var_attr(ctx, node, "VariableLatitude");
+            _check_var_attr(ctx, node, "VariableLongitude");
             break;
 
         case DC_APP_XML_ELEMENT_TYPE_EDGE_IO:

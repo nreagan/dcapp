@@ -531,6 +531,7 @@ int main(int argc, char **argv) {
     fprintf(file, "%s\n", "    // draws planet views and overlays through dcapp handles.");
     fprintf(file, "%s\n", "    DcDrawPlanetViewHandle (*planet_view_geodetic)(DcDrawContext *draw_ctx, DcPlanetViewHandle view, double lat, double lon, double elevation, DcVec3 rpy, float fov_degrees, bool orthographic, DcPlanetViewOptions options, DcVec2 position, DcVec2 size, DcPlacement placement, DcDrawResult *result);");
     fprintf(file, "%s\n", "    DcDrawPlanetViewHandle (*planet_view_cartesian)(DcDrawContext *draw_ctx, DcPlanetViewHandle view, DcVec3d camera_position, DcVec3 rpy, float fov_degrees, bool orthographic, DcPlanetViewOptions options, DcVec2 position, DcVec2 size, DcPlacement placement, DcDrawResult *result);");
+    fprintf(file, "%s\n", "    bool (*planet_view_xy_to_geodetic)(DcDrawPlanetViewHandle draw_view, DcVec2 xy, DcVec3d *geodetic_out);");
     fprintf(file, "%s\n", "    bool (*planet_container_push_geodetic)(DcDrawContext *draw_ctx, DcDrawPlanetViewHandle view, double lat, double lon, double height, DcPlanetLocalTransform transform);");
     fprintf(file, "%s\n", "    void (*planet_container_pop)(DcDrawContext *draw_ctx);");
     fprintf(file, "%s\n", "    void (*planet_line_local)(DcDrawContext *draw_ctx, const DcVec2 *points, uint32_t point_count, DcStroke stroke);");

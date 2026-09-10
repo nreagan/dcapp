@@ -60,6 +60,11 @@ doubles; integer variables truncate the coordinate. A 400-pixel container with
 </Container>
 ```
 
+For latitude and longitude under a `PlanetView`, use the dedicated
+[`PlanetPick`](planet.md#planetpick) leaf. It converts the held
+pointer position to a reference-body hit directly; generic `MouseMotion`
+continues to report only local X/Y coordinates.
+
 ## Slider pattern
 
 A draggable slider gates `MouseMotion` with a momentary button variable. The

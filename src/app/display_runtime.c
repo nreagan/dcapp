@@ -115,6 +115,7 @@ static void _render_pixelstream(DcAppDrawContext *ctx, DcAppDisplayRuntimeContex
 static void _render_polygon(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node);
 static void _render_rectangle(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node);
 static void _process_mouse_motion(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node);
+static void _process_planet_pick(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNode *node);
 static void _execute_set(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node);
 static void _render_sphere(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node);
 static void _render_stencil(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNodeIndex node_index, DcAppNode *node);
@@ -593,6 +594,10 @@ static void _render_node(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *rend
                 _render_planet_line(ctx, renderer, node, draw_view);
             break;
         }
+
+        case NODE_TYPE_PLANET_PICK:
+            _process_planet_pick(ctx, renderer, node);
+            break;
 
         case NODE_TYPE_PLANET_POLYGON: {
             DcAppDrawPlanetViewHandle draw_view = dc_app_draw_context_planet_view_peek(ctx);
@@ -4050,6 +4055,26 @@ static void _process_mouse_motion(DcAppDrawContext *ctx, DcAppDisplayRuntimeCont
             var_y->value_integer = (int)mouse_local.y;
         }
     }
+}
+
+static void _process_planet_pick(DcAppDrawContext *ctx, DcAppDisplayRuntimeContext *renderer, DcAppNode *node) {
+    const DcAppMouse *mouse = dc_app_mouse_get_state(ctx);
+    if (!mouse->down || !mouse->position_valid) return;
+
+    DcAppVec3d geodetic = {0};
+    if (!dc_app_draw_planet_view_xy_to_geodetic(
+            dc_app_draw_context_planet_view_peek(ctx),
+            (DcAppVec2){mouse->x, mouse->y},
+            &geodetic)) {
+        return;
+    }
+
+    DcAppValue *latitude = dc_app_variable_registry_get_value(renderer->lookup, dc_app_variable_registry_get_variable_value_index(renderer->lookup, node->planet_pick.var_latitude));
+    DcAppValue *longitude = dc_app_variable_registry_get_value(renderer->lookup, dc_app_variable_registry_get_variable_value_index(renderer->lookup, node->planet_pick.var_longitude));
+    latitude->value_double = geodetic.x;
+    longitude->value_double = geodetic.y;
+    dc_app_value_refresh(latitude);
+    dc_app_value_refresh(longitude);
 }
 
 static bool _apply_set_operation(DcAppDisplayRuntimeContext *renderer, DcAppVariableRegistryVariableIndex var_index, DcAppValue *var_value, DcAppValue *op_value, DcAppSetType operation) {

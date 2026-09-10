@@ -110,6 +110,7 @@ static DcAppNodeIndex _process_xml_node_planet_ellipse(DcAppDisplayBuilderContex
 static DcAppNodeIndex _process_xml_node_planet_geo_json(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory);
 static DcAppNodeIndex _process_xml_node_planet_image(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory);
 static DcAppNodeIndex _process_xml_node_planet_line(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory);
+static DcAppNodeIndex _process_xml_node_planet_pick(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory);
 static DcAppNodeIndex _process_xml_node_planet_polygon(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory);
 static DcAppNodeIndex _process_xml_node_planet_shader(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory);
 static void _planet_abs_path_to_vfs(const char *abs_path, char *vfs_out, size_t vfs_out_size);
@@ -372,6 +373,9 @@ DcAppNodeIndex dc_app_display_builder_process_xml_node(DcAppDisplayBuilderContex
 
         case DC_APP_XML_ELEMENT_TYPE_PLANET_LINE:
             return _process_xml_node_planet_line(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
+
+        case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK:
+            return _process_xml_node_planet_pick(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
 
         case DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON:
             return _process_xml_node_planet_polygon(xml_ctx, xml_node, parent_node_index, parent_elem_type, directory);
@@ -4312,6 +4316,53 @@ static DcAppNodeIndex _process_xml_node_planet_line(DcAppDisplayBuilderContext *
     return node_index;
 }
 
+static DcAppNodeIndex _process_xml_node_planet_pick(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
+    (void)parent_elem_type;
+    (void)directory;
+
+    DcAppNode *planet_parent = _find_semantic_planet_parent(xml_ctx, parent_node_index);
+    if (!planet_parent || planet_parent->type != NODE_TYPE_PLANET_VIEW) {
+        DC_LOG_ERROR("PlanetPick", "PlanetPick must be a child of PlanetView");
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    DcAppNode dc_node = {};
+    dc_node.type = NODE_TYPE_PLANET_PICK;
+    dc_node.parent = parent_node_index;
+
+    xmlChar *raw_latitude = xmlGetProp(xml_node, BAD_CAST "VariableLatitude");
+    xmlChar *raw_longitude = xmlGetProp(xml_node, BAD_CAST "VariableLongitude");
+    if (!raw_latitude || !raw_longitude) {
+        DC_LOG_ERROR("PlanetPick", "Missing output variable");
+        if (raw_latitude) xmlFree(raw_latitude);
+        if (raw_longitude) xmlFree(raw_longitude);
+        return NODE_INDEX_UNDEFINED;
+    }
+    dc_node.planet_pick.var_latitude = dc_app_variable_registry_get_variable_index(_lookup(xml_ctx), (const char *)raw_latitude);
+    dc_node.planet_pick.var_longitude = dc_app_variable_registry_get_variable_index(_lookup(xml_ctx), (const char *)raw_longitude);
+    if (raw_latitude) xmlFree(raw_latitude);
+    if (raw_longitude) xmlFree(raw_longitude);
+
+    if (dc_node.planet_pick.var_latitude == DC_APP_VARIABLE_REGISTRY_VARIABLE_INDEX_UNDEFINED ||
+        dc_node.planet_pick.var_longitude == DC_APP_VARIABLE_REGISTRY_VARIABLE_INDEX_UNDEFINED) {
+        DC_LOG_ERROR("PlanetPick", "Output variables must be declared before use");
+        return NODE_INDEX_UNDEFINED;
+    }
+    if (dc_node.planet_pick.var_latitude == dc_node.planet_pick.var_longitude) {
+        DC_LOG_ERROR("PlanetPick", "'VariableLatitude' and 'VariableLongitude' must name distinct variables");
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    DcAppValue *latitude = dc_app_variable_registry_get_value(_lookup(xml_ctx), dc_app_variable_registry_get_variable_value_index(_lookup(xml_ctx), dc_node.planet_pick.var_latitude));
+    DcAppValue *longitude = dc_app_variable_registry_get_value(_lookup(xml_ctx), dc_app_variable_registry_get_variable_value_index(_lookup(xml_ctx), dc_node.planet_pick.var_longitude));
+    if (latitude->type != DC_APP_VALUE_TYPE_DOUBLE || longitude->type != DC_APP_VALUE_TYPE_DOUBLE) {
+        DC_LOG_ERROR("PlanetPick", "Output variables must be doubles");
+        return NODE_INDEX_UNDEFINED;
+    }
+
+    return _register_node(xml_ctx, &dc_node);
+}
+
 static DcAppNodeIndex _process_xml_node_planet_polygon(DcAppDisplayBuilderContext *xml_ctx, xmlNodePtr xml_node, DcAppNodeIndex parent_node_index, DcAppXmlElementType parent_elem_type, const char *directory) {
     (void)parent_elem_type;
 
@@ -6108,6 +6159,8 @@ static const char *_node_type_to_string(DcAppNodeType type) {
             return "PlanetBreadcrumbs";
         case NODE_TYPE_PLANET_CONTAINER:
             return "PlanetContainer";
+        case NODE_TYPE_PLANET_PICK:
+            return "PlanetPick";
         case NODE_TYPE_PLANET_VIEW:
             return "PlanetView";
         case NODE_TYPE_TEXT:

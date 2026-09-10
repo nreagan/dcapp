@@ -120,6 +120,8 @@ const char *dc_app_xml_element_type_to_string(DcAppXmlElementType type) {
             return "PlanetImage";
         case DC_APP_XML_ELEMENT_TYPE_PLANET_LINE:
             return "PlanetLine";
+        case DC_APP_XML_ELEMENT_TYPE_PLANET_PICK:
+            return "PlanetPick";
         case DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON:
             return "PlanetPolygon";
         case DC_APP_XML_ELEMENT_TYPE_PLANET_SHADER:
@@ -265,6 +267,8 @@ DcAppXmlElementType dc_app_xml_element_type_from_string(const char *name) {
         return DC_APP_XML_ELEMENT_TYPE_PLANET_IMAGE;
     if (strcmp(name, "PlanetLine") == 0)
         return DC_APP_XML_ELEMENT_TYPE_PLANET_LINE;
+    if (strcmp(name, "PlanetPick") == 0)
+        return DC_APP_XML_ELEMENT_TYPE_PLANET_PICK;
     if (strcmp(name, "PlanetPolygon") == 0)
         return DC_APP_XML_ELEMENT_TYPE_PLANET_POLYGON;
     if (strcmp(name, "PlanetShader") == 0)

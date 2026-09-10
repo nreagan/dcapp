@@ -621,6 +621,13 @@ typedef struct DcAppNodePlanetText {
     DcAppValueType *sb_format_types;
 } DcAppNodePlanetText;
 
+//- interactions
+
+typedef struct DcAppNodePlanetPick {
+    DcAppVariableRegistryVariableIndex var_latitude;
+    DcAppVariableRegistryVariableIndex var_longitude;
+} DcAppNodePlanetPick;
+
 //- views and windows
 
 typedef struct DcAppNodePlanetView {
@@ -709,6 +716,7 @@ typedef struct DcAppNode {
         DcAppNodePlanetEllipse planet_ellipse;
         DcAppNodePlanetImage planet_image;
         DcAppNodePlanetLine planet_line;
+        DcAppNodePlanetPick planet_pick;
         DcAppNodePlanetPolygon planet_polygon;
         DcAppNodePlanetSphere planet_sphere;
         DcAppNodePlanetText planet_text;

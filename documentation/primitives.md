@@ -665,7 +665,8 @@ drawable parent.
 
 Its children are `<PlanetBreadcrumbs>`, `<PlanetContainer>`, `<PlanetEllipse>`,
 `<PlanetGeoJSON>`, `<PlanetImage>`, `<PlanetLine>`, `<PlanetPolygon>`,
-`<PlanetSphere>`, `<PlanetText>`, `<MouseMotion>`, and `<If>`.
+`<PlanetSphere>`, `<PlanetText>`, `<MouseMotion>`, `<PlanetPick>`, and
+`<If>`.
 
 The following drawable planet overlays support `Enabled`:
 `<PlanetBreadcrumbs>`, `<PlanetContainer>`, `<PlanetEllipse>`,
@@ -676,6 +677,21 @@ on the planet definition.
 | Attribute | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `Enabled` | boolean/var | No | Enables drawing. Defaults to true. |
+
+### `<PlanetPick>`
+
+Writes the reference-body latitude and longitude under the pointer while the
+primary pointer button is held. Place this leaf directly under a `PlanetView`
+or within its `If`/`True`/`False` branches.
+
+| Attribute | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `VariableLatitude` | variable name | **Yes** | Existing double variable that receives latitude in degrees |
+| `VariableLongitude` | variable name | **Yes** | Distinct existing double variable that receives east-positive longitude in degrees |
+
+The most recent successful hit remains latched when sampling is inactive or
+misses the reference body. See [Planet rendering](planet.md#planetpick)
+for the full range, ownership, and hit semantics.
 
 ### `<PlanetBreadcrumbs>`
 
